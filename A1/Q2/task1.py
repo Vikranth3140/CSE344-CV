@@ -208,7 +208,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-# ✅ Define CNN Model
+# Define CNN Model
 class WildlifeCNN(nn.Module):
     def __init__(self, num_classes=10):
         super(WildlifeCNN, self).__init__()
@@ -247,16 +247,16 @@ class WildlifeCNN(nn.Module):
 
 
 
-# ✅ Define Model
+# Define Model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = WildlifeCNN(num_classes=10).to(device)
 
-# ✅ Define Loss Function & Optimizer
+# Define Loss Function & Optimizer
 criterion = nn.CrossEntropyLoss()  # For multi-class classification
 optimizer = optim.Adam(model.parameters(), lr=0.001)  # Adam optimizer
 
 
-# ✅ Training Function
+# Training Function
 def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
     model.train()
 
@@ -285,11 +285,11 @@ def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Accuracy: {train_acc:.2f}%")
         wandb.log({"Train Loss": avg_loss, "Train Accuracy": train_acc})
 
-    print("✅ Training Complete!")
+    print("Training Complete!")
 
-# ✅ Train the Model
+# Train the Model
 train(model, train_dataloader, val_dataloader, criterion, optimizer, epochs=10)
 
 
 torch.save(model.state_dict(), "wildlife_cnn.pth")
-print("✅ Model Saved!")
+print("Model Saved!")
