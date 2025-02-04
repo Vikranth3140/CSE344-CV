@@ -392,3 +392,59 @@ train_and_validate(model, train_dataloader, val_dataloader, criterion, optimizer
 # Save Model
 torch.save(model.state_dict(), "wildlife_cnn.pth")
 print("Model Saved!")
+
+
+
+
+
+# 2.2.d.
+
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import wandb
+
+
+# Function to Evaluate Model and Log Metrics
+def evaluate_model(model, val_loader):
+    model.eval()  # Set model to evaluation mode
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():  # No gradient tracking needed
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)  # Get predicted class
+            
+            all_preds.extend(preds.cpu().numpy())  # Convert tensors to numpy
+            all_labels.extend(labels.cpu().numpy())
+
+    # Compute Metrics
+    val_accuracy = accuracy_score(all_labels, all_preds) * 100  # Convert to percentage
+    val_f1 = f1_score(all_labels, all_preds, average="weighted")  # Weighted F1-Score
+    conf_matrix = confusion_matrix(all_labels, all_preds)  # Compute Confusion Matrix
+
+    print(f"Validation Accuracy: {val_accuracy:.2f}%")
+    print(f"Validation F1-Score: {val_f1:.4f}")
+
+    # Log Metrics to WandB
+    wandb.log({
+        "Validation Accuracy": val_accuracy,
+        "Validation F1-Score": val_f1
+    })
+
+    # Log Confusion Matrix to WandB
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues", xticklabels=CLASS_MAPPING.keys(), yticklabels=CLASS_MAPPING.keys())
+    plt.xlabel("Predicted Labels")
+    plt.ylabel("True Labels")
+    plt.title("Confusion Matrix")
+
+    wandb.log({"Confusion Matrix": wandb.Image(fig)})
+    plt.show()
+
+
+# Run Evaluation on Validation Set
+evaluate_model(model, val_dataloader)
