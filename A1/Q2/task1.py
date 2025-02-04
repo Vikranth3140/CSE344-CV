@@ -96,7 +96,6 @@ from torchvision import transforms
 # Define transformations (resize and normalize)
 transform = transforms.Compose([
     transforms.Resize((224, 224)),  # Resize images to 224x224
-    transforms.ToTensor(),          # Convert to tensor
     transforms.Normalize([0.5], [0.5])  # Normalize
 ])
 
@@ -131,6 +130,25 @@ wandb.config.update({
 
 
 
+# Define batch size
+batch_size = 32
+
+
+# Create data loaders
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+
+# Example: Log first batch shapes
+train_features, train_labels = next(iter(train_dataloader))
+
+wandb.log({"train_batch_shape": train_features.shape[0]})
+wandb.log({"train_batch_channels": train_features.shape[1]})
+wandb.log({"train_batch_height": train_features.shape[2]})
+wandb.log({"train_batch_width": train_features.shape[3]})
+
+
+
 
 
 
@@ -147,12 +165,8 @@ from torch.utils.data import DataLoader
 
 
 
-# Define batch size
-batch_size = 32
 
-# Create data loaders
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
 
 
 
