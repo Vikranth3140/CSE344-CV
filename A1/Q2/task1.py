@@ -3,12 +3,12 @@ import torch
 import random
 import shutil
 import wandb
+import torchvision
 import torchvision.transforms as transforms
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from torchvision.io import read_image
-from torchvision.datasets import ImageFolder
 
 
 
@@ -19,10 +19,10 @@ CLASS_MAPPING = {
 
 
 
-# # Define dataset path
-# DATASET_PATH = r"dataset"
-# TRAIN_PATH = r"train_dataset"
-# VAL_PATH = r"val_dataset"
+# Define dataset path
+DATASET_PATH = r"dataset"
+TRAIN_PATH = r"train_dataset"
+VAL_PATH = r"val_dataset"
 
 # # Get class-wise image paths
 # data = []
@@ -81,97 +81,63 @@ class WildlifeDataset(Dataset):
     def __getitem__(self, idx):
         img_path, label = self.img_labels[idx]
         image = read_image(img_path).float()  # Load image as a tensor
-        
+
         if self.transform:
             image = self.transform(image)
 
         return image, label
 
-
-
-
-
-from torchvision import transforms
-
-# Define transformations (resize and normalize)
+# Define Transformations
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),  # Resize images to 224x224
+    transforms.Resize((224, 224)),  # Resize images
     transforms.Normalize([0.5], [0.5])  # Normalize
 ])
 
 # Initialize datasets
-train_dataset = WildlifeDataset("train_dataset", CLASS_MAPPING, transform=transform)
-val_dataset = WildlifeDataset("val_dataset", CLASS_MAPPING, transform=transform)
+train_dataset = WildlifeDataset(TRAIN_PATH, CLASS_MAPPING, transform=transform)
+val_dataset = WildlifeDataset(VAL_PATH, CLASS_MAPPING, transform=transform)
 
 
-from torch.utils.data import DataLoader
+# 2.1.b.
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-
-
-
-
-import wandb
+# Create DataLoaders
+batch_size = 32
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 # Initialize WandB
 wandb.init(
-    project="russian-wildlife-classification",  # Set project name
-    entity="vikranth2764-na"  # Replace with your WandB username
+    project="russian-wildlife-classification",
+    entity="vikranth2764-na"
 )
 
 # Log dataset info
 wandb.config.update({
     "train_size": len(train_dataset),
     "val_size": len(val_dataset),
-    "batch_size": 32
+    "batch_size": batch_size
 })
-
-
-
-# Define batch size
-batch_size = 32
-
-
-# Create data loaders
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-
-# Example: Log first batch shapes
-train_features, train_labels = next(iter(train_dataloader))
-
-wandb.log({"train_batch_shape": train_features.shape[0]})
-wandb.log({"train_batch_channels": train_features.shape[1]})
-wandb.log({"train_batch_height": train_features.shape[2]})
-wandb.log({"train_batch_width": train_features.shape[3]})
-
-
-
-
-
-
-
-
-
-
-
-
-
-# 2.1.b.
-
-from torch.utils.data import DataLoader
-
-
-
-
-
-
-
 
 # Get a batch of training data
 train_features, train_labels = next(iter(train_dataloader))
 
+# Log batch shape info
+wandb.log({
+    "train_batch_shape": train_features.shape[0],
+    "train_batch_channels": train_features.shape[1],
+    "train_batch_height": train_features.shape[2],
+    "train_batch_width": train_features.shape[3]
+})
+
+# Log sample images
+img_grid = torchvision.utils.make_grid(train_features[:16])  # First 16 images
+wandb.log({"Sample Train Images": [wandb.Image(img_grid, caption="Train Batch")]})
+
+# Log label distribution
+wandb.log({"Label Distribution": wandb.Histogram(train_labels.tolist())})
+
+# Print batch info
 print(f"Feature batch shape: {train_features.shape}")
 print(f"Labels batch shape: {train_labels.shape}")
+
+print("WandB Logging Done! Check your dashboard.")
