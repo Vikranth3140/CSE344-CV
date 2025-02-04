@@ -188,3 +188,108 @@ wandb.log({
         columns=["Class", "Count"]
     )
 })
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 2.2.a.
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+# ✅ Define CNN Model
+class WildlifeCNN(nn.Module):
+    def __init__(self, num_classes=10):
+        super(WildlifeCNN, self).__init__()
+        
+        # Conv Layer 1: 3 → 32 channels, 3x3 kernel, padding=1, stride=1
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=4)  # 4x4 max pooling
+
+        # Conv Layer 2: 32 → 64 channels
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)  # 2x2 max pooling
+
+        # Conv Layer 3: 64 → 128 channels
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)  # 2x2 max pooling
+
+        # Fully Connected Layer (Flatten + Classification Head)
+        self.fc1 = nn.Linear(128 * 14 * 14, 256)  # Adjust size based on pooling
+        self.fc2 = nn.Linear(256, num_classes)  # Output layer
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.pool1(x)
+
+        x = F.relu(self.conv2(x))
+        x = self.pool2(x)
+
+        x = F.relu(self.conv3(x))
+        x = self.pool3(x)
+
+        x = torch.flatten(x, start_dim=1)  # Flatten before FC layers
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+
+        return x
+
+
+
+# ✅ Define Model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = WildlifeCNN(num_classes=10).to(device)
+
+# ✅ Define Loss Function & Optimizer
+criterion = nn.CrossEntropyLoss()  # For multi-class classification
+optimizer = optim.Adam(model.parameters(), lr=0.001)  # Adam optimizer
+
+
+# ✅ Training Function
+def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
+    model.train()
+
+    for epoch in range(epochs):
+        total_loss = 0
+        correct = 0
+        total = 0
+
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+
+        train_acc = 100 * correct / total
+        avg_loss = total_loss / len(train_loader)
+
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Accuracy: {train_acc:.2f}%")
+        wandb.log({"Train Loss": avg_loss, "Train Accuracy": train_acc})
+
+    print("✅ Training Complete!")
+
+# ✅ Train the Model
+train(model, train_dataloader, val_dataloader, criterion, optimizer, epochs=10)
+
+
+torch.save(model.state_dict(), "wildlife_cnn.pth")
+print("✅ Model Saved!")
