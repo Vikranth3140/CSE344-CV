@@ -128,3 +128,36 @@ wandb.config.update({
     "val_size": len(val_dataset),
     "batch_size": 32
 })
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 2.1.b.
+
+from torch.utils.data import DataLoader
+
+
+
+# Define batch size
+batch_size = 32
+
+# Create data loaders
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+
+
+# Get a batch of training data
+train_features, train_labels = next(iter(train_dataloader))
+
+print(f"Feature batch shape: {train_features.shape}")
+print(f"Labels batch shape: {train_labels.shape}")
