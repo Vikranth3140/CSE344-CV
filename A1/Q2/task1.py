@@ -293,3 +293,102 @@ train(model, train_dataloader, val_dataloader, criterion, optimizer, epochs=10)
 
 torch.save(model.state_dict(), "wildlife_cnn.pth")
 print("Model Saved!")
+
+
+
+
+
+
+
+# 2.2.b.
+
+# Training & Validation Function
+def train_and_validate(model, train_loader, val_loader, criterion, optimizer, epochs=10):
+    model.train()
+
+    for epoch in range(epochs):
+        # Track Training Loss & Accuracy
+        total_train_loss = 0
+        correct_train = 0
+        total_train = 0
+
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            correct_train += (predicted == labels).sum().item()
+            total_train += labels.size(0)
+
+        train_acc = 100 * correct_train / total_train
+        avg_train_loss = total_train_loss / len(train_loader)
+
+        # Validation Phase
+        model.eval()
+        total_val_loss = 0
+        correct_val = 0
+        total_val = 0
+
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+                total_val_loss += loss.item()
+                _, predicted = torch.max(outputs, 1)
+                correct_val += (predicted == labels).sum().item()
+                total_val += labels.size(0)
+
+        val_acc = 100 * correct_val / total_val
+        avg_val_loss = total_val_loss / len(val_loader)
+
+        # Log to WandB
+        wandb.log({
+            "Epoch": epoch + 1,
+            "Train Loss": avg_train_loss,
+            "Train Accuracy": train_acc,
+            "Validation Loss": avg_val_loss,
+            "Validation Accuracy": val_acc
+        })
+
+        print(f"Epoch [{epoch+1}/{epochs}], "
+              f"Train Loss: {avg_train_loss:.4f}, Train Accuracy: {train_acc:.2f}%, "
+              f"Val Loss: {avg_val_loss:.4f}, Val Accuracy: {val_acc:.2f}%")
+
+    print("Training Complete!")
+
+
+
+
+# Initialize WandB
+wandb.init(
+    project="russian-wildlife-classification",
+    entity="vikranth2764-na",
+    config={
+        "epochs": 10,
+        "batch_size": batch_size,
+        "learning_rate": 0.001,
+        "optimizer": "Adam",
+        "loss_function": "CrossEntropyLoss"
+    }
+)
+
+# Define Model, Loss & Optimizer
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = WildlifeCNN(num_classes=10).to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# Start Training
+train_and_validate(model, train_dataloader, val_dataloader, criterion, optimizer, epochs=10)
+
+# Save Model
+torch.save(model.state_dict(), "wildlife_cnn.pth")
+print("Model Saved!")
