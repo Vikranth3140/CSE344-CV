@@ -9,7 +9,8 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from torchvision.io import read_image
-
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 CLASS_MAPPING = {
@@ -143,28 +144,21 @@ print(f"Labels batch shape: {train_labels.shape}")
 print("WandB Logging Done! Check your dashboard.")
 
 
-
-
 # 2.1.c.
 
-import matplotlib.pyplot as plt
-import numpy as np
-
-# ✅ Count class occurrences in the training set
+# Count class occurrences in the training set
 train_label_counts = {class_name: 0 for class_name in CLASS_MAPPING.keys()}
 for _, label in train_dataset.img_labels:
     class_name = list(CLASS_MAPPING.keys())[list(CLASS_MAPPING.values()).index(label)]
     train_label_counts[class_name] += 1
 
-# ✅ Count class occurrences in the validation set
+# Count class occurrences in the validation set
 val_label_counts = {class_name: 0 for class_name in CLASS_MAPPING.keys()}
 for _, label in val_dataset.img_labels:
     class_name = list(CLASS_MAPPING.keys())[list(CLASS_MAPPING.values()).index(label)]
     val_label_counts[class_name] += 1
 
-
-
-# ✅ Define function to plot distributions
+# Define function to plot distributions
 def plot_distribution(label_counts, title, color):
     classes = list(label_counts.keys())
     counts = list(label_counts.values())
@@ -177,15 +171,13 @@ def plot_distribution(label_counts, title, color):
     plt.title(title)
     plt.show()
 
-# ✅ Plot Training Set Distribution
+# Plot Training Set Distribution
 plot_distribution(train_label_counts, "Training Set Class Distribution", "blue")
 
-# ✅ Plot Validation Set Distribution
+# Plot Validation Set Distribution
 plot_distribution(val_label_counts, "Validation Set Class Distribution", "green")
 
-
-
-# ✅ Log class distributions to WandB
+# Log class distributions to WandB
 wandb.log({
     "Training Class Distribution": wandb.Table(
         data=[(k, v) for k, v in train_label_counts.items()], 
