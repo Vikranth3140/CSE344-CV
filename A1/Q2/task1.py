@@ -83,12 +83,24 @@ class WildlifeDataset(Dataset):
         img_path, label = self.img_labels[idx]
         image = read_image(img_path).float()  # Load image as a tensor
 
+        # Convert grayscale images to RGB
+        if image.shape[0] == 1:  # If 1-channel (grayscale), repeat across 3 channels
+            image = image.repeat(3, 1, 1)
+
         if self.transform:
             image = self.transform(image)
 
         return image, label
 
-# Define Transformations
+
+
+
+
+
+
+
+
+
 transform = transforms.Compose([
     transforms.Resize((224, 224)),  # Resize images
     transforms.Normalize([0.5], [0.5])  # Normalize
@@ -448,3 +460,102 @@ def evaluate_model(model, val_loader):
 
 # Run Evaluation on Validation Set
 evaluate_model(model, val_dataloader)
+
+
+
+
+
+
+
+
+
+# 2.2.e.
+
+
+
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from torchvision.transforms.functional import to_pil_image
+
+# Function to find misclassified images
+def find_misclassified_samples(model, val_loader, class_mapping, num_samples=3):
+    model.eval()
+    misclassified = {class_name: [] for class_name in class_mapping.keys()}  # Store misclassified samples
+
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)  # Get predicted class
+            
+            for i in range(len(labels)):
+                true_label = labels[i].item()
+                pred_label = preds[i].item()
+                
+                if true_label != pred_label:  # If misclassified
+                    class_name = list(class_mapping.keys())[true_label]
+                    misclassified[class_name].append((images[i].cpu(), list(class_mapping.keys())[pred_label]))
+
+    # Keep only the first `num_samples` misclassified images per class
+    for class_name in misclassified:
+        misclassified[class_name] = misclassified[class_name][:num_samples]
+
+    return misclassified
+
+def unnormalize(tensor):
+    """
+    Unnormalize the image tensor that was normalized with mean=0.5, std=0.5
+    """
+    tensor = tensor.clone()  # Clone to avoid modifying the original tensor
+    mean = 0.5
+    std = 0.5
+    tensor = tensor * std + mean
+    tensor = torch.clamp(tensor, 0, 1)  # Clamp values to valid range
+    return tensor
+
+def plot_misclassified_images(misclassified):
+    for class_name, samples in misclassified.items():
+        if len(samples) == 0:
+            continue
+
+        fig, axes = plt.subplots(1, len(samples), figsize=(12, 4))
+        fig.suptitle(f"Misclassified Samples for Class: {class_name}", fontsize=14)
+
+        for i, (image, predicted_class) in enumerate(samples):
+            if len(samples) == 1:
+                ax = axes
+            else:
+                ax = axes[i]
+            
+            # Unnormalize and convert to displayable format
+            image = unnormalize(image)
+            image = to_pil_image(image)
+            
+            ax.imshow(image)
+            ax.set_title(f"Predicted: {predicted_class}")
+            ax.axis("off")
+
+        plt.show()
+
+
+# Run the visualization
+misclassified_samples = find_misclassified_samples(model, val_dataloader, CLASS_MAPPING)
+plot_misclassified_images(misclassified_samples)
+
+
+
+# Log misclassified images to WandB
+for class_name, samples in misclassified_samples.items():
+    if len(samples) == 0:
+        continue
+
+    misclassified_images = [
+        wandb.Image(
+            to_pil_image(unnormalize(image)),
+            caption=f"Predicted: {pred}"
+        ) 
+        for image, pred in samples
+    ]
+
+    wandb.log({f"Misclassified {class_name}": misclassified_images})
