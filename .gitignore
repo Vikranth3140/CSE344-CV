@@ -2,5 +2,5 @@ Classification/dataset/
 Classification/train_dataset/
 Classification/val_dataset/
 Classification/__pycache__/
-Classification/venv/
+Classification/myenv/
 Classification/wandb/
