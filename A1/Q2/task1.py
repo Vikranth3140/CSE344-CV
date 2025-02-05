@@ -559,3 +559,99 @@ for class_name, samples in misclassified_samples.items():
     ]
 
     wandb.log({f"Misclassified {class_name}": misclassified_images})
+
+
+# 2.3.a.
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision.models as models
+import wandb
+
+# Load Pretrained ResNet-18
+resnet18 = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)  # Pretrained on ImageNet
+num_ftrs = resnet18.fc.in_features  # Get input features for last FC layer
+
+# Modify Last Layer to Match 10-Class Classification
+resnet18.fc = nn.Linear(num_ftrs, 10)  # 10 classes
+
+# Move Model to GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = resnet18.to(device)
+
+# Loss Function & Optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# Initialize WandB for ResNet Training
+wandb.init(
+    project="russian-wildlife-classification",
+    entity="vikranth2764-na",
+    config={"epochs": 10, "batch_size": batch_size, "learning_rate": 0.001, "optimizer": "Adam", "model": "ResNet-18"}
+)
+
+# Training Function
+def train_resnet(model, train_loader, val_loader, criterion, optimizer, epochs=10):
+    for epoch in range(epochs):
+        model.train()  # Set model to training mode
+        total_train_loss = 0
+        correct_train = 0
+        total_train = 0
+
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+            _, preds = torch.max(outputs, 1)
+            correct_train += (preds == labels).sum().item()
+            total_train += labels.size(0)
+
+        train_acc = 100 * correct_train / total_train
+        avg_train_loss = total_train_loss / len(train_loader)
+
+        # Validation
+        model.eval()
+        total_val_loss = 0
+        correct_val = 0
+        total_val = 0
+
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+                total_val_loss += loss.item()
+                _, preds = torch.max(outputs, 1)
+                correct_val += (preds == labels).sum().item()
+                total_val += labels.size(0)
+
+        val_acc = 100 * correct_val / total_val
+        avg_val_loss = total_val_loss / len(val_loader)
+
+        # Log to WandB
+        wandb.log({
+            "Epoch": epoch + 1,
+            "Train Loss": avg_train_loss,
+            "Train Accuracy": train_acc,
+            "Validation Loss": avg_val_loss,
+            "Validation Accuracy": val_acc
+        })
+
+        print(f"Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}% | Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+
+    print("ResNet-18 Training Complete!")
+
+# Run Training for ResNet-18
+train_resnet(model, train_dataloader, val_dataloader, criterion, optimizer, epochs=10)
+
+# Save the Fine-Tuned Model
+torch.save(model.state_dict(), "resnet18_finetuned.pth")
+print("Fine-Tuned ResNet-18 Model Saved!")
