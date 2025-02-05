@@ -710,3 +710,84 @@ def evaluate_and_log_metrics(model, val_loader, class_mapping):
 
 # Run Evaluation and Logging
 evaluate_and_log_metrics(model, val_dataloader, CLASS_MAPPING)
+
+
+
+# 2.3.d.
+
+
+
+
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.manifold import TSNE
+from torchvision.models import resnet18
+import wandb
+from mpl_toolkits.mplot3d import Axes3D  # For 3D visualization
+
+# Load Pretrained ResNet-18 (without classification head)
+resnet_model = resnet18(pretrained=True)
+resnet_model.fc = torch.nn.Identity()  # Remove final FC layer to get feature vectors
+resnet_model = resnet_model.to(device)
+resnet_model.eval()
+
+# Function to Extract Features
+def extract_features(model, dataloader):
+    features = []
+    labels = []
+
+    with torch.no_grad():
+        for images, lbls in dataloader:
+            images = images.to(device)
+            outputs = model(images)  # Extract feature vectors (512D)
+            features.append(outputs.cpu().numpy())
+            labels.append(lbls.numpy())
+
+    return np.vstack(features), np.concatenate(labels)
+
+# Extract Features for Training & Validation Sets
+train_features, train_labels = extract_features(resnet_model, train_dataloader)
+val_features, val_labels = extract_features(resnet_model, val_dataloader)
+
+# Function to Apply t-SNE & Plot
+def plot_tsne(features, labels, title, is_3D=False):
+    tsne = TSNE(n_components=3 if is_3D else 2, perplexity=30, random_state=42)
+    reduced_features = tsne.fit_transform(features)
+
+    fig = plt.figure(figsize=(10, 6))
+
+    if is_3D:
+        ax = fig.add_subplot(111, projection='3d')
+        scatter = ax.scatter(reduced_features[:, 0], reduced_features[:, 1], reduced_features[:, 2],
+                             c=labels, cmap='tab10', alpha=0.8)
+    else:
+        scatter = plt.scatter(reduced_features[:, 0], reduced_features[:, 1], c=labels, cmap='tab10', alpha=0.8)
+
+    plt.colorbar(scatter, label="Class Label")
+    plt.title(title)
+    plt.xlabel("t-SNE Component 1")
+    plt.ylabel("t-SNE Component 2")
+
+    if is_3D:
+        ax.set_zlabel("t-SNE Component 3")
+
+    plt.show()
+    return fig
+
+# Plot 2D t-SNE for Training & Validation Sets
+fig_train = plot_tsne(train_features, train_labels, "t-SNE (2D) - Training Set")
+fig_val = plot_tsne(val_features, val_labels, "t-SNE (2D) - Validation Set")
+
+# Plot 3D t-SNE for Validation Set
+fig_val_3d = plot_tsne(val_features, val_labels, "t-SNE (3D) - Validation Set", is_3D=True)
+
+# Log t-SNE Plots to WandB
+wandb.log({
+    "t-SNE 2D Training": wandb.Image(fig_train),
+    "t-SNE 2D Validation": wandb.Image(fig_val),
+    "t-SNE 3D Validation": wandb.Image(fig_val_3d)
+})
+
+print("t-SNE Plots Generated & Logged to WandB! 🎉")
