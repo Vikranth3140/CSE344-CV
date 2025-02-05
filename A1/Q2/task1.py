@@ -560,7 +560,6 @@ for class_name, samples in misclassified_samples.items():
 
     wandb.log({f"Misclassified {class_name}": misclassified_images})
 
-
 # 2.3.a.
 
 import torch
@@ -655,3 +654,59 @@ train_resnet(model, train_dataloader, val_dataloader, criterion, optimizer, epoc
 # Save the Fine-Tuned Model
 torch.save(model.state_dict(), "resnet18_finetuned.pth")
 print("Fine-Tuned ResNet-18 Model Saved!")
+
+
+
+# 2.3.c.
+
+
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import wandb
+
+# Function to Evaluate and Log Performance
+def evaluate_and_log_metrics(model, val_loader, class_mapping):
+    model.eval()  # Set model to evaluation mode
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():  # No gradient tracking needed
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)  # Get predicted class
+            
+            all_preds.extend(preds.cpu().numpy())  # Convert tensors to numpy
+            all_labels.extend(labels.cpu().numpy())
+
+    # Compute Accuracy and F1-Score
+    val_accuracy = accuracy_score(all_labels, all_preds) * 100
+    val_f1 = f1_score(all_labels, all_preds, average="weighted")
+
+    print(f"Validation Accuracy: {val_accuracy:.2f}%")
+    print(f"Validation F1-Score: {val_f1:.4f}")
+
+    # Log Metrics to WandB
+    wandb.log({
+        "Validation Accuracy": val_accuracy,
+        "Validation F1-Score": val_f1
+    })
+
+    # Compute Confusion Matrix
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    
+    # Plot Confusion Matrix
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues",
+                xticklabels=class_mapping.keys(), yticklabels=class_mapping.keys())
+    plt.xlabel("Predicted Labels")
+    plt.ylabel("True Labels")
+    plt.title("Confusion Matrix")
+
+    # Log Confusion Matrix to WandB
+    wandb.log({"Confusion Matrix": wandb.Image(fig)})
+    plt.show()
+
+# Run Evaluation and Logging
+evaluate_and_log_metrics(model, val_dataloader, CLASS_MAPPING)
