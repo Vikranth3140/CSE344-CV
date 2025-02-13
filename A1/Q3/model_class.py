@@ -1,190 +1,313 @@
-import os
 import torch
-import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import numpy as np
-from torchvision.transforms import functional as F
-import pandas as pd
-import matplotlib.pyplot as plt
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+from torchvision import models,transforms
+import wandb
+from dataset_class import get_dataloaders
 
-# Read the class mapping from CSV
-CLASS_MAPPING = pd.read_csv('dataset/class_dict.csv')
+class SegNet_Encoder(nn.Module):
 
-def analyze_dataset(data_dir):
-    """Analyze the dataset structure and contents"""
-    train_images_dir = os.path.join(data_dir, 'train')
-    train_masks_dir = os.path.join(data_dir, 'train_labels')
-    test_images_dir = os.path.join(data_dir, 'test_images')
-    test_masks_dir = os.path.join(data_dir, 'test_labels')
-    
-    # Count files
-    train_images = sorted([f for f in os.listdir(train_images_dir) if f.endswith('.jpg') or f.endswith('.png')])
-    train_masks = sorted([f for f in os.listdir(train_masks_dir) if f.endswith('.jpg') or f.endswith('.png')])
-    test_images = sorted([f for f in os.listdir(test_images_dir) if f.endswith('.jpg') or f.endswith('.png')])
-    test_masks = sorted([f for f in os.listdir(test_masks_dir) if f.endswith('.jpg') or f.endswith('.png')])
-    
-    # Load a sample image and mask to get dimensions
-    sample_img = Image.open(os.path.join(train_images_dir, train_images[0]))
-    sample_mask = Image.open(os.path.join(train_masks_dir, train_masks[0]))
-    
-    print("Dataset Analysis:")
-    print(f"Number of training images: {len(train_images)}")
-    print(f"Number of training masks: {len(train_masks)}")
-    print(f"Number of test images: {len(test_images)}")
-    print(f"Number of test masks: {len(test_masks)}")
-    print(f"Original image dimensions: {sample_img.size}")
-    print(f"Original mask dimensions: {sample_mask.size}")
-    print(f"\nNumber of classes: {len(CLASS_MAPPING)}")
-    print("\nClass distribution:")
-    print(CLASS_MAPPING[['name', 'r', 'g', 'b']].head())
-    
-    # Visualize a sample pair
-    plt.figure(figsize=(12, 4))
-    
-    plt.subplot(1, 2, 1)
-    plt.imshow(sample_img)
-    plt.title("Sample Training Image")
-    plt.axis('off')
-    
-    plt.subplot(1, 2, 2)
-    plt.imshow(sample_mask)
-    plt.title("Sample Training Mask")
-    plt.axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return len(train_images), sample_img.size
+    def __init__(self, in_chn=3, out_chn=32, BN_momentum=0.5):
+        super(SegNet_Encoder, self).__init__()
 
-class SegmentationDataset(Dataset):
-    def __init__(self, data_dir, split='train', transform=None):
-        self.data_dir = data_dir
-        self.split = split
-        self.transform = transform
-        self.class_mapping = CLASS_MAPPING
-        
-        # Get all image and mask files based on split
-        if split == 'train':
-            self.images_dir = os.path.join(data_dir, 'train')
-            self.masks_dir = os.path.join(data_dir, 'train_labels')
-        else:  # test
-            self.images_dir = os.path.join(data_dir, 'test_images')
-            self.masks_dir = os.path.join(data_dir, 'test_labels')
-        
-        self.image_files = sorted([f for f in os.listdir(self.images_dir) if f.endswith('.jpg') or f.endswith('.png')])
-        self.mask_files = sorted([f for f in os.listdir(self.masks_dir) if f.endswith('.jpg') or f.endswith('.png')])
-        
-        # Basic transforms for both image and mask
-        self.resize = transforms.Resize((360, 480), interpolation=transforms.InterpolationMode.BILINEAR)
-        self.resize_mask = transforms.Resize((360, 480), interpolation=transforms.InterpolationMode.NEAREST)
-        self.normalize = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
+        #SegNet Architecture
+        #Takes input of size in_chn = 3 (RGB images have 3 channels)
+        #Outputs size label_chn (N # of classes)
 
-    def __len__(self):
-        return len(self.image_files)
+        #ENCODING consists of 5 stages
+        #Stage 1, 2 has 2 layers of Convolution + Batch Normalization + Max Pool respectively
+        #Stage 3, 4, 5 has 3 layers of Convolution + Batch Normalization + Max Pool respectively
 
-    def __getitem__(self, idx):
-        # Load image and mask
-        img_path = os.path.join(self.images_dir, self.image_files[idx])
-        mask_path = os.path.join(self.masks_dir, self.mask_files[idx])
-        
-        # Open images using PIL
-        image = Image.open(img_path).convert('RGB')
-        mask = Image.open(mask_path).convert('RGB')  # Convert mask to RGB since it's color-coded
-        
-        # Resize both image and mask
-        image = self.resize(image)
-        mask = self.resize_mask(mask)  # Use nearest neighbor interpolation for masks
-        
-        # Convert to tensor
-        image = F.to_tensor(image)
-        mask = torch.from_numpy(np.array(mask))
-        mask = mask.permute(2, 0, 1)  # Convert to CxHxW format
-        
-        # Normalize only the image, not the mask
-        image = self.normalize(image)
-        
-        # Convert mask to class indices
-        mask = self.convert_mask_to_class_indices(mask)
-        
-        return image, mask
+        #General Max Pool 2D for ENCODING layers
+        #Pooling indices are stored for Upsampling in DECODING layers
+
+        self.in_chn = in_chn
+        self.out_chn = out_chn
+
+        self.MaxEn = nn.MaxPool2d(2, stride=2, return_indices=True) 
+
+        self.ConvEn11 = nn.Conv2d(self.in_chn, 64, kernel_size=3, padding=1)
+        self.BNEn11 = nn.BatchNorm2d(64, momentum=BN_momentum)
+        self.ConvEn12 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.BNEn12 = nn.BatchNorm2d(64, momentum=BN_momentum)
+
+        self.ConvEn21 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.BNEn21 = nn.BatchNorm2d(128, momentum=BN_momentum)
+        self.ConvEn22 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.BNEn22 = nn.BatchNorm2d(128, momentum=BN_momentum)
+
+        self.ConvEn31 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.BNEn31 = nn.BatchNorm2d(256, momentum=BN_momentum)
+        self.ConvEn32 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.BNEn32 = nn.BatchNorm2d(256, momentum=BN_momentum)
+        self.ConvEn33 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.BNEn33 = nn.BatchNorm2d(256, momentum=BN_momentum)
+
+        self.ConvEn41 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
+        self.BNEn41 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvEn42 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNEn42 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvEn43 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNEn43 = nn.BatchNorm2d(512, momentum=BN_momentum)
+
+        self.ConvEn51 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNEn51 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvEn52 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNEn52 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvEn53 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNEn53 = nn.BatchNorm2d(512, momentum=BN_momentum)
+    def forward(self,x):
+        #ENCODE LAYERS
+        #Stage 1
+        x = F.relu(self.BNEn11(self.ConvEn11(x))) 
+        x = F.relu(self.BNEn12(self.ConvEn12(x))) 
+        x, ind1 = self.MaxEn(x)
+        size1 = x.size()
+
+        #Stage 2
+        x = F.relu(self.BNEn21(self.ConvEn21(x))) 
+        x = F.relu(self.BNEn22(self.ConvEn22(x))) 
+        x, ind2 = self.MaxEn(x)
+        size2 = x.size()
+
+        #Stage 3
+        x = F.relu(self.BNEn31(self.ConvEn31(x))) 
+        x = F.relu(self.BNEn32(self.ConvEn32(x))) 
+        x = F.relu(self.BNEn33(self.ConvEn33(x)))   
+        x, ind3 = self.MaxEn(x)
+        size3 = x.size()
+
+        #Stage 4
+        x = F.relu(self.BNEn41(self.ConvEn41(x))) 
+        x = F.relu(self.BNEn42(self.ConvEn42(x))) 
+        x = F.relu(self.BNEn43(self.ConvEn43(x)))   
+        x, ind4 = self.MaxEn(x)
+        size4 = x.size()
+
+        #Stage 5
+        x = F.relu(self.BNEn51(self.ConvEn51(x))) 
+        x = F.relu(self.BNEn52(self.ConvEn52(x))) 
+        x = F.relu(self.BNEn53(self.ConvEn53(x)))   
+        x, ind5 = self.MaxEn(x)
+        size5 = x.size()
+        return x,[ind1,ind2,ind3,ind4,ind5],[size1,size2,size3,size4,size5]
     
-    def convert_mask_to_class_indices(self, mask):
-        """Convert RGB mask to class indices"""
-        mask = mask.float()
-        class_mask = torch.zeros(mask.shape[1], mask.shape[2], dtype=torch.long)
+
+
+class SegNet_Decoder(nn.Module):
+    def __init__(self, in_chn=3, out_chn=32, BN_momentum=0.5):
+        super(SegNet_Decoder, self).__init__()
+        self.in_chn = in_chn
+        self.out_chn = out_chn
         
-        for idx, row in self.class_mapping.iterrows():
-            r, g, b = row['r'], row['g'], row['b']
-            class_pixels = (mask[0] == r/255.0) & (mask[1] == g/255.0) & (mask[2] == b/255.0)
-            class_mask[class_pixels] = idx
+        # General Max Unpool for all stages
+        self.MaxDe = nn.MaxUnpool2d(2, stride=2)
+        
+        # Stage 5
+        self.ConvDe51 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNDe51 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvDe52 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNDe52 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvDe53 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNDe53 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        
+        # Stage 4
+        self.ConvDe41 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNDe41 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvDe42 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.BNDe42 = nn.BatchNorm2d(512, momentum=BN_momentum)
+        self.ConvDe43 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
+        self.BNDe43 = nn.BatchNorm2d(256, momentum=BN_momentum)
+        
+        # Stage 3
+        self.ConvDe31 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.BNDe31 = nn.BatchNorm2d(256, momentum=BN_momentum)
+        self.ConvDe32 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.BNDe32 = nn.BatchNorm2d(256, momentum=BN_momentum)
+        self.ConvDe33 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
+        self.BNDe33 = nn.BatchNorm2d(128, momentum=BN_momentum)
+        
+        # Stage 2
+        self.ConvDe21 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.BNDe21 = nn.BatchNorm2d(128, momentum=BN_momentum)
+        self.ConvDe22 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.BNDe22 = nn.BatchNorm2d(64, momentum=BN_momentum)
+        
+        # Stage 1
+        self.ConvDe11 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.BNDe11 = nn.BatchNorm2d(64, momentum=BN_momentum)
+        self.ConvDe12 = nn.Conv2d(64, out_chn, kernel_size=3, padding=1)
+
+    def forward(self, x, indices, sizes):
+        ind1, ind2, ind3, ind4, ind5 = indices
+        size1, size2, size3, size4, size5 = sizes
+        
+        # Stage 5 decode
+        x = self.MaxDe(x, ind5, output_size=size4)
+        x = F.relu(self.BNDe51(self.ConvDe51(x)))
+        x = F.relu(self.BNDe52(self.ConvDe52(x)))
+        x = F.relu(self.BNDe53(self.ConvDe53(x)))
+        
+        # Stage 4 decode
+        x = self.MaxDe(x, ind4, output_size=size3)
+        x = F.relu(self.BNDe41(self.ConvDe41(x)))
+        x = F.relu(self.BNDe42(self.ConvDe42(x)))
+        x = F.relu(self.BNDe43(self.ConvDe43(x)))
+        
+        # Stage 3 decode
+        x = self.MaxDe(x, ind3, output_size=size2)
+        x = F.relu(self.BNDe31(self.ConvDe31(x)))
+        x = F.relu(self.BNDe32(self.ConvDe32(x)))
+        x = F.relu(self.BNDe33(self.ConvDe33(x)))
+        
+        # Stage 2 decode
+        x = self.MaxDe(x, ind2, output_size=size1)
+        x = F.relu(self.BNDe21(self.ConvDe21(x)))
+        x = F.relu(self.BNDe22(self.ConvDe22(x)))
+        
+        # Stage 1 decode
+        x = self.MaxDe(x, ind1)
+        x = F.relu(self.BNDe11(self.ConvDe11(x)))
+        x = self.ConvDe12(x)
+        
+        return x
+
+
+class SegNet_Pretrained(nn.Module):
+    def __init__(self,encoder_weight_pth,in_chn=3, out_chn=32):
+        super(SegNet_Pretrained, self).__init__()
+        self.in_chn = in_chn
+        self.out_chn = out_chn
+        self.encoder=SegNet_Encoder(in_chn=self.in_chn,out_chn=self.out_chn)
+        self.decoder=SegNet_Decoder(in_chn=self.in_chn,out_chn=self.out_chn)
+        encoder_state_dict = torch.load(encoder_weight_pth,weights_only=True)
+
+        # Load weights into the encoder
+        self.encoder.load_state_dict(encoder_state_dict)
+
+        # Freeze encoder weights
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+    def forward(self,x):
+        x,indexes,sizes=self.encoder(x)
+        x=self.decoder(x,indexes,sizes)
+        return x
+
+
+class DeepLabV3(nn.Module):
+    def __init__(self, num_classes=32):
+        super(DeepLabV3, self).__init__()
+        self.model =None # TODO: Initialize DeepLabV3 model here using pretrained=True
+        self.model.classifier[4] =None #  should be a Conv2D layer with input channels as 256 and output channel as num_classes using a stride of 1, and kernel size of 1.
+       
+    def forward(self, x):
+        return self.model(x)['out']
+
+def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
+    """Train the SegNet model"""
+    # Initialize wandb
+    wandb.init(
+        project="segmentation-segnet",
+        config={
+            "architecture": "SegNet",
+            "dataset": "CamVid",
+            "epochs": num_epochs,
+            "batch_size": train_loader.batch_size,
+            "optimizer": "Adam",
+            "learning_rate": 0.001,
+            "batch_norm_momentum": 0.5
+        }
+    )
+    
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.decoder.parameters(), lr=0.001)
+    
+    # Training loop
+    best_val_loss = float('inf')
+    
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        
+        for batch_idx, (images, masks) in enumerate(train_loader):
+            images, masks = images.to(device), masks.to(device)
             
-        return class_mask
-
-def get_dataloaders(data_dir, batch_size=4):
-    # Create train and test datasets
-    train_dataset = SegmentationDataset(data_dir, split='train')
-    test_dataset = SegmentationDataset(data_dir, split='test')
+            # Forward pass
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+            
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+            # Log batch loss
+            wandb.log({
+                "batch": batch_idx + epoch * len(train_loader),
+                "batch_loss": loss.item()
+            })
+            
+            if batch_idx % 10 == 0:
+                print(f'Epoch: {epoch+1}/{num_epochs}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}')
+        
+        # Calculate average training loss for the epoch
+        avg_train_loss = total_loss / len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0
+        
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, masks)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        
+        # Log epoch metrics
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "val_loss": avg_val_loss
+        })
+        
+        print(f'Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+        
+        # Save best model
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), 'best_segnet.pth')
     
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=True
-    )
-    
-    return train_loader, test_loader
+    wandb.finish()
+    return model
 
 if __name__ == "__main__":
-    # Analyze dataset
-    print("\nAnalyzing dataset structure...")
-    num_images, image_size = analyze_dataset("dataset")
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
     
-    # Test the dataloader
-    print("\nTesting dataloader...")
-    train_loader, test_loader = get_dataloaders("dataset")
+    # Load data
+    train_loader, test_loader = get_dataloaders("dataset", batch_size=8)
     
-    # Get a batch of training data
-    images, masks = next(iter(train_loader))
+    # Initialize model
+    model = SegNet_Pretrained(
+        encoder_weight_pth='encoder_model.pth',
+        in_chn=3,
+        out_chn=32
+    ).to(device)
     
-    print(f"\nDataloader output:")
-    print(f"Image batch shape: {images.shape}")
-    print(f"Mask batch shape: {masks.shape}")
-    print(f"Image value range: ({images.min():.3f}, {images.max():.3f})")
-    print(f"Mask value range: ({masks.min():.3f}, {masks.max():.3f})")
-    print(f"Number of training batches: {len(train_loader)}")
-    print(f"Number of test batches: {len(test_loader)}")
-    
-    # Visualize a batch
-    plt.figure(figsize=(15, 5))
-    
-    # Show image
-    plt.subplot(1, 2, 1)
-    img = images[0].permute(1, 2, 0).numpy()
-    img = (img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406]))
-    img = np.clip(img, 0, 1)
-    plt.imshow(img)
-    plt.title("Sample Training Image from Batch")
-    plt.axis('off')
-    
-    # Show mask
-    plt.subplot(1, 2, 2)
-    plt.imshow(masks[0].numpy())
-    plt.title("Sample Training Mask from Batch")
-    plt.axis('off')
-    
-    plt.tight_layout()
-    plt.show()
+    # Train model
+    trained_model = train_segnet(
+        model=model,
+        train_loader=train_loader,
+        val_loader=test_loader,
+        device=device,
+        num_epochs=10
+    )
