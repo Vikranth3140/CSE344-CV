@@ -108,21 +108,25 @@ class SegmentationDataset(Dataset):
         image = self.normalize(image)
         
         # Convert mask to class indices
-        mask = self.convert_mask_to_class_indices(mask)
-        
+        mask, self.class_to_idx = self.convert_mask_to_class_indices(mask)
         return image, mask
     
     def convert_mask_to_class_indices(self, mask):
-        """Convert RGB mask to class indices"""
+        """Convert RGB mask to class indices from 0 to 31"""
         mask = mask.float()
         class_mask = torch.zeros(mask.shape[1], mask.shape[2], dtype=torch.long)
         
+        # Create class name to index mapping
+        class_to_idx = {row['name']: idx for idx, row in self.class_mapping.iterrows()}
+        
+        # Create RGB to class index mapping
         for idx, row in self.class_mapping.iterrows():
             r, g, b = row['r'], row['g'], row['b']
-            class_pixels = (mask[0] == r/255.0) & (mask[1] == g/255.0) & (mask[2] == b/255.0)
-            class_mask[class_pixels] = idx
+            # Find pixels matching this class's RGB values
+            rgb_match = (mask[0] == r) & (mask[1] == g) & (mask[2] == b)
+            class_mask[rgb_match] = class_to_idx[row['name']]  # Assign class index to matching pixels
             
-        return class_mask
+        return class_mask, class_to_idx
 
 def get_dataloaders(data_dir, batch_size=4):
     # Create train and test datasets
@@ -279,6 +283,9 @@ if __name__ == "__main__":
     print(f"\nDataloader output:")
     print(f"Image batch shape: {images.shape}")
     print(f"Mask batch shape: {masks.shape}")
+    print(f"Mask value range: ({masks.min():.3f}, {masks.max():.3f})")
+    print("fsddddddddddd")
+    print(masks)
     print(f"Image value range: ({images.min():.3f}, {images.max():.3f})")
     print(f"Mask value range: ({masks.min():.3f}, {masks.max():.3f})")
     print(f"Number of training batches: {len(train_loader)}")
@@ -296,9 +303,22 @@ if __name__ == "__main__":
     plt.title("Sample Training Image from Batch")
     plt.axis('off')
     
-    # Show mask
+    class_map = {row['name']: idx for idx, row in CLASS_MAPPING.iterrows()}
+    print("class_map", class_map)
+    color_map = CLASS_MAPPING
+
+    # Show mask using the class_map and color_map
+    mask = masks[0].numpy()
+    
+    # Create RGB mask using the color map
+    rgb_mask = np.zeros((mask.shape[0], mask.shape[1], 3))
+    for class_name, idx in class_map.items():
+        color = color_map[color_map['name'] == class_name].iloc[0]
+        rgb_values = [color['r'], color['g'], color['b']]
+        rgb_mask[mask == idx] = rgb_values
+    
     plt.subplot(1, 2, 2)
-    plt.imshow(masks[0].numpy())
+    plt.imshow(rgb_mask.astype(np.uint8))
     plt.title("Sample Training Mask from Batch")
     plt.axis('off')
     
