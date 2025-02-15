@@ -4,7 +4,11 @@ import torch.nn.functional as F
 import torchvision
 from torchvision import models,transforms
 import wandb
-from dataset_class import get_dataloaders
+from dataset_class import get_dataloaders, CLASS_MAPPING
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from scipy.ndimage import label
 
 class SegNet_Encoder(nn.Module):
 
@@ -205,8 +209,8 @@ class DeepLabV3(nn.Module):
     def forward(self, x):
         return self.model(x)['out']
 
-def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
-    """Train the SegNet model"""
+def train_and_evaluate(model, train_loader, test_loader, device, num_epochs=10):
+    """Train and evaluate the model"""
     # Initialize wandb
     wandb.init(
         project="segmentation-segnet",
@@ -221,6 +225,32 @@ def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
         }
     )
     
+    # Train model
+    trained_model = train_segnet(
+        model=model,
+        train_loader=train_loader,
+        val_loader=test_loader,
+        device=device,
+        num_epochs=num_epochs
+    )
+    
+    # Evaluate model
+    print("\nEvaluating model on test set...")
+    class_names = CLASS_MAPPING['name'].tolist()
+    metrics, miou = evaluate_model(trained_model, test_loader, device, class_names)
+    
+    # Log final test metrics to wandb
+    wandb.log({
+        "test_miou": miou,
+        "test_mean_pixel_acc": np.mean(metrics['pixel_acc']),
+        "test_mean_dice": np.mean(metrics['dice'])
+    })
+    
+    wandb.finish()
+    return trained_model, metrics, miou
+
+def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
+    """Train the SegNet model"""
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.decoder.parameters(), lr=0.001)
@@ -285,8 +315,263 @@ def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), 'best_segnet.pth')
     
-    wandb.finish()
     return model
+
+def calculate_metrics(pred_mask, true_mask, num_classes, iou_thresholds=np.arange(0, 1.1, 0.1)):
+    """
+    Calculate segmentation metrics for each class
+    Args:
+        pred_mask: Predicted mask (B, H, W)
+        true_mask: Ground truth mask (B, H, W)
+        num_classes: Number of classes
+        iou_thresholds: IoU thresholds for evaluation
+    Returns:
+        Dictionary containing metrics for each class
+    """
+    metrics = {
+        'pixel_acc': np.zeros(num_classes),
+        'dice': np.zeros(num_classes),
+        'iou': np.zeros(num_classes),
+        'precision': np.zeros((num_classes, len(iou_thresholds))),
+        'recall': np.zeros((num_classes, len(iou_thresholds)))
+    }
+    
+    # Convert tensors to numpy arrays
+    if torch.is_tensor(pred_mask):
+        pred_mask = pred_mask.cpu().numpy()
+    if torch.is_tensor(true_mask):
+        true_mask = true_mask.cpu().numpy()
+    
+    # Calculate metrics for each class
+    for class_idx in range(num_classes):
+        # Create binary masks for current class
+        pred_binary = (pred_mask == class_idx)
+        true_binary = (true_mask == class_idx)
+        
+        # Pixel accuracy
+        total_pixels = true_binary.size
+        correct_pixels = np.sum(pred_binary == true_binary)
+        metrics['pixel_acc'][class_idx] = correct_pixels / total_pixels
+        
+        # Intersection and Union
+        intersection = np.sum(pred_binary & true_binary)
+        union = np.sum(pred_binary | true_binary)
+        
+        # Dice coefficient
+        dice = 2 * intersection / (np.sum(pred_binary) + np.sum(true_binary) + 1e-8)
+        metrics['dice'][class_idx] = dice
+        
+        # IoU
+        iou = intersection / (union + 1e-8)
+        metrics['iou'][class_idx] = iou
+        
+        # Precision and Recall for different IoU thresholds
+        for i, threshold in enumerate(iou_thresholds):
+            # True Positive: prediction matches ground truth with IoU > threshold
+            tp = np.sum((pred_binary & true_binary) & (iou > threshold))
+            # False Positive: prediction doesn't match ground truth
+            fp = np.sum(pred_binary & ~true_binary)
+            # False Negative: missed ground truth
+            fn = np.sum(~pred_binary & true_binary)
+            
+            precision = tp / (tp + fp + 1e-8)
+            recall = tp / (tp + fn + 1e-8)
+            
+            metrics['precision'][class_idx, i] = precision
+            metrics['recall'][class_idx, i] = recall
+    
+    return metrics
+
+def evaluate_model(model, test_loader, device, class_names):
+    """
+    Evaluate model on test set and report metrics
+    """
+    model.eval()
+    num_classes = len(class_names)
+    iou_thresholds = np.arange(0, 1.1, 0.1)
+    
+    # Initialize metrics storage
+    all_metrics = {
+        'pixel_acc': np.zeros(num_classes),
+        'dice': np.zeros(num_classes),
+        'iou': np.zeros(num_classes),
+        'precision': np.zeros((num_classes, len(iou_thresholds))),
+        'recall': np.zeros((num_classes, len(iou_thresholds)))
+    }
+    
+    num_batches = 0
+    
+    with torch.no_grad():
+        for images, masks in test_loader:
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+            predictions = torch.argmax(outputs, dim=1)
+            
+            # Calculate metrics for this batch
+            batch_metrics = calculate_metrics(predictions, masks, num_classes, iou_thresholds)
+            
+            # Accumulate metrics
+            for metric in all_metrics:
+                all_metrics[metric] += batch_metrics[metric]
+            
+            num_batches += 1
+    
+    # Average metrics
+    for metric in all_metrics:
+        all_metrics[metric] /= num_batches
+    
+    # Calculate mIoU
+    miou = np.mean(all_metrics['iou'])
+    
+    # Print results
+    print("\nTest Set Evaluation Results:")
+    print("=" * 50)
+    print(f"Mean IoU (mIoU): {miou:.4f}")
+    print("\nClass-wise Results:")
+    print("-" * 50)
+    print(f"{'Class':<20} {'Pixel Acc':>10} {'Dice':>10} {'IoU':>10}")
+    print("-" * 50)
+    
+    for idx, class_name in enumerate(class_names):
+        print(f"{class_name:<20} {all_metrics['pixel_acc'][idx]:>10.4f} {all_metrics['dice'][idx]:>10.4f} {all_metrics['iou'][idx]:>10.4f}")
+    
+    # Print Precision and Recall for different IoU thresholds
+    print("\nPrecision and Recall at different IoU thresholds:")
+    print("-" * 80)
+    print(f"{'Class':<20} {'Threshold':>10} {'Precision':>10} {'Recall':>10}")
+    print("-" * 80)
+    
+    for idx, class_name in enumerate(class_names):
+        for t_idx, threshold in enumerate(iou_thresholds):
+            print(f"{class_name if t_idx == 0 else '':<20} {threshold:>10.1f} {all_metrics['precision'][idx, t_idx]:>10.4f} {all_metrics['recall'][idx, t_idx]:>10.4f}")
+    
+    return all_metrics, miou
+
+def visualize_failure_cases(model, test_loader, device, class_names, color_map, num_samples=3, iou_threshold=0.5):
+    """
+    Visualize failure cases for each class where IoU <= threshold
+    """
+    model.eval()
+    failure_cases = {class_name: [] for class_name in class_names}
+    
+    with torch.no_grad():
+        for images, masks in test_loader:
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+            predictions = torch.argmax(outputs, dim=1)
+            
+            # Move tensors to CPU for numpy operations
+            images = images.cpu()
+            masks = masks.cpu()
+            predictions = predictions.cpu()
+            
+            # Calculate IoU for each class in each image
+            for idx, class_name in enumerate(class_names):
+                for img_idx in range(images.shape[0]):
+                    pred_binary = (predictions[img_idx] == idx)
+                    true_binary = (masks[img_idx] == idx)
+                    
+                    if true_binary.sum() > 0:  # Only consider images where class is present
+                        intersection = (pred_binary & true_binary).sum().item()
+                        union = (pred_binary | true_binary).sum().item()
+                        iou = intersection / (union + 1e-8)
+                        
+                        if iou <= iou_threshold:
+                            failure_cases[class_name].append({
+                                'image': images[img_idx],
+                                'pred': predictions[img_idx],
+                                'true': masks[img_idx],
+                                'iou': iou
+                            })
+    
+    # Visualize failure cases
+    for class_name in class_names:
+        cases = failure_cases[class_name]
+        if len(cases) == 0:
+            continue
+            
+        print(f"\nFailure Analysis for Class: {class_name}")
+        print("=" * 50)
+        
+        # Sort by IoU and take first num_samples
+        cases.sort(key=lambda x: x['iou'])
+        cases = cases[:num_samples]
+        
+        fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
+        if num_samples == 1:
+            axes = axes.reshape(1, -1)
+            
+        for i, case in enumerate(cases):
+            # Original image
+            img = case['image'].permute(1, 2, 0).numpy()
+            img = (img * 0.5) + 0.5  # Denormalize
+            axes[i, 0].imshow(img)
+            axes[i, 0].set_title(f'Original Image\nIoU: {case["iou"]:.3f}')
+            axes[i, 0].axis('off')
+            
+            # Ground Truth mask
+            true_rgb = np.zeros((*case['true'].shape, 3))
+            for idx, name in enumerate(class_names):
+                color = color_map[color_map['name'] == name].iloc[0]
+                rgb = [color['r'], color['g'], color['b']]
+                true_rgb[case['true'] == idx] = rgb
+            axes[i, 1].imshow(true_rgb.astype(np.uint8))
+            axes[i, 1].set_title('Ground Truth')
+            axes[i, 1].axis('off')
+            
+            # Predicted mask
+            pred_rgb = np.zeros((*case['pred'].shape, 3))
+            for idx, name in enumerate(class_names):
+                color = color_map[color_map['name'] == name].iloc[0]
+                rgb = [color['r'], color['g'], color['b']]
+                pred_rgb[case['pred'] == idx] = rgb
+            axes[i, 2].imshow(pred_rgb.astype(np.uint8))
+            axes[i, 2].set_title('Prediction')
+            axes[i, 2].axis('off')
+            
+            # Add analysis text
+            analysis = analyze_failure(case['true'], case['pred'], class_name)
+            plt.figtext(0.02, 0.98 - (i/num_samples), analysis, wrap=True, 
+                       horizontalalignment='left', fontsize=10)
+        
+        plt.tight_layout()
+        plt.show()
+
+def analyze_failure(true_mask, pred_mask, target_class):
+    """Analyze why the model might be failing"""
+    # Convert to numpy for analysis
+    true_mask = true_mask.numpy()
+    pred_mask = pred_mask.numpy()
+    
+    # Calculate various metrics
+    true_pixels = (true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).sum()
+    pred_pixels = (pred_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).sum()
+    
+    analysis = []
+    
+    # Size analysis
+    if true_pixels < 1000:
+        analysis.append("Small object size might make detection difficult")
+    
+    # Over/Under segmentation
+    ratio = pred_pixels / (true_pixels + 1e-8)
+    if ratio > 1.5:
+        analysis.append("Model is over-segmenting the class")
+    elif ratio < 0.5:
+        analysis.append("Model is under-segmenting the class")
+    
+    # Edge analysis
+    true_edges = cv2.Canny((true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).astype(np.uint8) * 255, 100, 200)
+    if np.sum(true_edges) > 5000:
+        analysis.append("Complex object boundaries might be causing segmentation errors")
+    
+    # Fragmentation analysis
+    true_labels, true_count = label((true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]))
+    pred_labels, pred_count = label((pred_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]))
+    if abs(true_count - pred_count) > 2:
+        analysis.append(f"Object fragmentation: Ground truth has {true_count} components, prediction has {pred_count}")
+    
+    return "Analysis: " + "; ".join(analysis) if analysis else "No specific failure patterns detected"
 
 if __name__ == "__main__":
     # Set device
@@ -303,11 +588,22 @@ if __name__ == "__main__":
         out_chn=32
     ).to(device)
     
-    # Train model
-    trained_model = train_segnet(
+    # Train and evaluate model
+    trained_model, metrics, miou = train_and_evaluate(
         model=model,
         train_loader=train_loader,
-        val_loader=test_loader,
+        test_loader=test_loader,
         device=device,
         num_epochs=10
+    )
+
+    # After model evaluation
+    visualize_failure_cases(
+        model=trained_model,
+        test_loader=test_loader,
+        device=device,
+        class_names=CLASS_MAPPING['name'].tolist(),
+        color_map=CLASS_MAPPING,
+        num_samples=3,
+        iou_threshold=0.5
     )

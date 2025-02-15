@@ -118,7 +118,7 @@ class SegmentationDataset(Dataset):
         
         # Create class name to index mapping
         class_to_idx = {row['name']: idx for idx, row in self.class_mapping.iterrows()}
-        
+
         # Create RGB to class index mapping
         for idx, row in self.class_mapping.iterrows():
             r, g, b = row['r'], row['g'], row['b']
