@@ -6,9 +6,7 @@ from torchvision import models,transforms
 import wandb
 from dataset_class import get_dataloaders, CLASS_MAPPING
 import numpy as np
-import matplotlib.pyplot as plt
-import cv2
-from scipy.ndimage import label
+from tqdm import tqdm
 
 class SegNet_Encoder(nn.Module):
 
@@ -203,8 +201,19 @@ class SegNet_Pretrained(nn.Module):
 class DeepLabV3(nn.Module):
     def __init__(self, num_classes=32):
         super(DeepLabV3, self).__init__()
-        self.model =None # TODO: Initialize DeepLabV3 model here using pretrained=True
-        self.model.classifier[4] =None #  should be a Conv2D layer with input channels as 256 and output channel as num_classes using a stride of 1, and kernel size of 1.
+        # Initialize pre-trained DeepLabV3 with ResNet50 backbone
+        self.model = models.segmentation.deeplabv3_resnet50(
+            weights=models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1,
+            progress=True
+        )
+        
+        # Replace the classifier head with a new one for our number of classes
+        self.model.classifier[4] = nn.Conv2d(
+            in_channels=256,
+            out_channels=num_classes,
+            kernel_size=1,
+            stride=1
+        )
        
     def forward(self, x):
         return self.model(x)['out']
@@ -447,131 +456,207 @@ def evaluate_model(model, test_loader, device, class_names):
     
     return all_metrics, miou
 
-def visualize_failure_cases(model, test_loader, device, class_names, color_map, num_samples=3, iou_threshold=0.5):
-    """
-    Visualize failure cases for each class where IoU <= threshold
-    """
-    model.eval()
-    failure_cases = {class_name: [] for class_name in class_names}
+def train_deeplabv3(model, train_loader, val_loader, device, num_epochs=10):
+    """Train the DeepLabV3 model with different strategies from SegNet"""
     
-    with torch.no_grad():
-        for images, masks in test_loader:
+    # Different loss function: Combine CrossEntropy with Dice Loss
+    ce_criterion = nn.CrossEntropyLoss()
+    dice_criterion = DiceLoss()
+    
+    # Different optimizer setup with weight decay
+    optimizer = torch.optim.Adam([
+        {'params': model.model.backbone.parameters(), 'lr': 0.00001},
+        {'params': model.model.classifier.parameters(), 'lr': 0.0001}
+    ], weight_decay=1e-4)
+    
+    # Add a more aggressive learning rate scheduler
+    scheduler = torch.optim.OneCycleLR(
+        optimizer,
+        max_lr=[0.00001, 0.0001],
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader)
+    )
+    
+    # Training loop with early stopping
+    best_val_loss = float('inf')
+    patience = 5
+    patience_counter = 0
+    
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        total_ce_loss = 0
+        total_dice_loss = 0
+        
+        # Progress bar for training
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
+        
+        for batch_idx, (images, masks) in enumerate(pbar):
             images, masks = images.to(device), masks.to(device)
+            
+            # Forward pass
             outputs = model(images)
-            predictions = torch.argmax(outputs, dim=1)
             
-            # Move tensors to CPU for numpy operations
-            images = images.cpu()
-            masks = masks.cpu()
-            predictions = predictions.cpu()
+            # Calculate both losses
+            ce_loss = ce_criterion(outputs, masks)
+            dice_loss = dice_criterion(outputs, masks)
+            loss = ce_loss + dice_loss
             
-            # Calculate IoU for each class in each image
-            for idx, class_name in enumerate(class_names):
-                for img_idx in range(images.shape[0]):
-                    pred_binary = (predictions[img_idx] == idx)
-                    true_binary = (masks[img_idx] == idx)
-                    
-                    if true_binary.sum() > 0:  # Only consider images where class is present
-                        intersection = (pred_binary & true_binary).sum().item()
-                        union = (pred_binary | true_binary).sum().item()
-                        iou = intersection / (union + 1e-8)
-                        
-                        if iou <= iou_threshold:
-                            failure_cases[class_name].append({
-                                'image': images[img_idx],
-                                'pred': predictions[img_idx],
-                                'true': masks[img_idx],
-                                'iou': iou
-                            })
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            
+            # Gradient clipping (different from SegNet)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            optimizer.step()
+            
+            # Update total losses
+            total_loss += loss.item()
+            total_ce_loss += ce_loss.item()
+            total_dice_loss += dice_loss.item()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'ce_loss': f'{ce_loss.item():.4f}',
+                'dice_loss': f'{dice_loss.item():.4f}'
+            })
+            
+            # Log batch metrics
+            wandb.log({
+                "batch": batch_idx + epoch * len(train_loader),
+                "batch_total_loss": loss.item(),
+                "batch_ce_loss": ce_loss.item(),
+                "batch_dice_loss": dice_loss.item()
+            })
+        
+        # Calculate average losses
+        avg_loss = total_loss / len(train_loader)
+        avg_ce_loss = total_ce_loss / len(train_loader)
+        avg_dice_loss = total_dice_loss / len(train_loader)
+        
+        # Validation phase with metrics
+        model.eval()
+        val_loss = 0
+        val_metrics = {
+            'iou': [],
+            'pixel_acc': [],
+            'dice': []
+        }
+        
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
+                outputs = model(images)
+                
+                # Calculate validation loss
+                val_ce_loss = ce_criterion(outputs, masks)
+                val_dice_loss = dice_criterion(outputs, masks)
+                val_loss += (val_ce_loss + val_dice_loss).item()
+                
+                # Calculate validation metrics
+                predictions = torch.argmax(outputs, dim=1)
+                batch_metrics = calculate_batch_metrics(predictions, masks)
+                for k in val_metrics.keys():
+                    val_metrics[k].extend(batch_metrics[k])
+        
+        avg_val_loss = val_loss / len(val_loader)
+        mean_val_metrics = {k: np.mean(v) for k, v in val_metrics.items()}
+        
+        # Update learning rate
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        
+        # Log epoch metrics
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_total_loss": avg_loss,
+            "train_ce_loss": avg_ce_loss,
+            "train_dice_loss": avg_dice_loss,
+            "val_loss": avg_val_loss,
+            "val_iou": mean_val_metrics['iou'],
+            "val_pixel_acc": mean_val_metrics['pixel_acc'],
+            "val_dice": mean_val_metrics['dice'],
+            "learning_rate": current_lr
+        })
+        
+        print(f'\nEpoch {epoch+1} Summary:')
+        print(f'Train Loss: {avg_loss:.4f} (CE: {avg_ce_loss:.4f}, Dice: {avg_dice_loss:.4f})')
+        print(f'Val Loss: {avg_val_loss:.4f}')
+        print(f'Val Metrics - IoU: {mean_val_metrics["iou"]:.4f}, '
+              f'Pixel Acc: {mean_val_metrics["pixel_acc"]:.4f}, '
+              f'Dice: {mean_val_metrics["dice"]:.4f}')
+        print(f'Learning Rate: {current_lr:.6f}')
+        
+        # Save best model and early stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'val_loss': best_val_loss,
+                'val_metrics': mean_val_metrics
+            }, 'best_deeplabv3.pth')
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f'\nEarly stopping triggered after {epoch + 1} epochs')
+                break
     
-    # Visualize failure cases
-    for class_name in class_names:
-        cases = failure_cases[class_name]
-        if len(cases) == 0:
-            continue
-            
-        print(f"\nFailure Analysis for Class: {class_name}")
-        print("=" * 50)
-        
-        # Sort by IoU and take first num_samples
-        cases.sort(key=lambda x: x['iou'])
-        cases = cases[:num_samples]
-        
-        fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
-        if num_samples == 1:
-            axes = axes.reshape(1, -1)
-            
-        for i, case in enumerate(cases):
-            # Original image
-            img = case['image'].permute(1, 2, 0).numpy()
-            img = (img * 0.5) + 0.5  # Denormalize
-            axes[i, 0].imshow(img)
-            axes[i, 0].set_title(f'Original Image\nIoU: {case["iou"]:.3f}')
-            axes[i, 0].axis('off')
-            
-            # Ground Truth mask
-            true_rgb = np.zeros((*case['true'].shape, 3))
-            for idx, name in enumerate(class_names):
-                color = color_map[color_map['name'] == name].iloc[0]
-                rgb = [color['r'], color['g'], color['b']]
-                true_rgb[case['true'] == idx] = rgb
-            axes[i, 1].imshow(true_rgb.astype(np.uint8))
-            axes[i, 1].set_title('Ground Truth')
-            axes[i, 1].axis('off')
-            
-            # Predicted mask
-            pred_rgb = np.zeros((*case['pred'].shape, 3))
-            for idx, name in enumerate(class_names):
-                color = color_map[color_map['name'] == name].iloc[0]
-                rgb = [color['r'], color['g'], color['b']]
-                pred_rgb[case['pred'] == idx] = rgb
-            axes[i, 2].imshow(pred_rgb.astype(np.uint8))
-            axes[i, 2].set_title('Prediction')
-            axes[i, 2].axis('off')
-            
-            # Add analysis text
-            analysis = analyze_failure(case['true'], case['pred'], class_name)
-            plt.figtext(0.02, 0.98 - (i/num_samples), analysis, wrap=True, 
-                       horizontalalignment='left', fontsize=10)
-        
-        plt.tight_layout()
-        plt.show()
+    return model
 
-def analyze_failure(true_mask, pred_mask, target_class):
-    """Analyze why the model might be failing"""
-    # Convert to numpy for analysis
-    true_mask = true_mask.numpy()
-    pred_mask = pred_mask.numpy()
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        
+    def forward(self, predictions, targets):
+        # Convert predictions to probabilities
+        predictions = F.softmax(predictions, dim=1)
+        
+        # One-hot encode targets
+        targets_one_hot = F.one_hot(targets, num_classes=predictions.shape[1])
+        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()
+        
+        # Calculate Dice coefficient for each class
+        intersection = (predictions * targets_one_hot).sum(dim=(2, 3))
+        union = predictions.sum(dim=(2, 3)) + targets_one_hot.sum(dim=(2, 3))
+        
+        # Calculate Dice loss
+        dice = (2. * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1 - dice.mean()
+        
+        return dice_loss
+
+def calculate_batch_metrics(predictions, targets):
+    """Calculate metrics for a batch"""
+    metrics = {
+        'iou': [],
+        'pixel_acc': [],
+        'dice': []
+    }
     
-    # Calculate various metrics
-    true_pixels = (true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).sum()
-    pred_pixels = (pred_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).sum()
+    for pred, target in zip(predictions, targets):
+        # Calculate IoU
+        intersection = torch.logical_and(pred, target)
+        union = torch.logical_or(pred, target)
+        iou = (intersection.sum() / (union.sum() + 1e-8)).item()
+        
+        # Calculate Pixel Accuracy
+        pixel_acc = (pred == target).float().mean().item()
+        
+        # Calculate Dice Coefficient
+        dice = (2 * intersection.sum() / (pred.sum() + target.sum() + 1e-8)).item()
+        
+        metrics['iou'].append(iou)
+        metrics['pixel_acc'].append(pixel_acc)
+        metrics['dice'].append(dice)
     
-    analysis = []
-    
-    # Size analysis
-    if true_pixels < 1000:
-        analysis.append("Small object size might make detection difficult")
-    
-    # Over/Under segmentation
-    ratio = pred_pixels / (true_pixels + 1e-8)
-    if ratio > 1.5:
-        analysis.append("Model is over-segmenting the class")
-    elif ratio < 0.5:
-        analysis.append("Model is under-segmenting the class")
-    
-    # Edge analysis
-    true_edges = cv2.Canny((true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]).astype(np.uint8) * 255, 100, 200)
-    if np.sum(true_edges) > 5000:
-        analysis.append("Complex object boundaries might be causing segmentation errors")
-    
-    # Fragmentation analysis
-    true_labels, true_count = label((true_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]))
-    pred_labels, pred_count = label((pred_mask == CLASS_MAPPING[CLASS_MAPPING['name'] == target_class].index[0]))
-    if abs(true_count - pred_count) > 2:
-        analysis.append(f"Object fragmentation: Ground truth has {true_count} components, prediction has {pred_count}")
-    
-    return "Analysis: " + "; ".join(analysis) if analysis else "No specific failure patterns detected"
+    return metrics
 
 if __name__ == "__main__":
     # Set device
@@ -595,15 +680,4 @@ if __name__ == "__main__":
         test_loader=test_loader,
         device=device,
         num_epochs=10
-    )
-
-    # After model evaluation
-    visualize_failure_cases(
-        model=trained_model,
-        test_loader=test_loader,
-        device=device,
-        class_names=CLASS_MAPPING['name'].tolist(),
-        color_map=CLASS_MAPPING,
-        num_samples=3,
-        iou_threshold=0.5
     )
