@@ -1,4 +1,3 @@
-import torchvision 
 from torchvision import models
 import torch
 import torch.nn as nn
@@ -11,9 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.manifold import TSNE
 import seaborn as sns
-from mpl_toolkits.mplot3d import Axes3D
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
-# Create weights directory
 os.makedirs('weights', exist_ok=True)
 
 class ResNet18(nn.Module):
@@ -101,7 +99,8 @@ class ConvNet(nn.Module):
         
         return x
 
-def train_resnet(train_dataloader, val_dataloader, device, num_classes=10):
+# We can use this function to train the resnet model with or without data augmentation by passing in the augmented parameter
+def train_resnet(train_dataloader, val_dataloader, device, num_classes=10, augmented=False):
     # Initialize model
     model = ResNet18(num_classes=num_classes)
     model = model.to(device)
@@ -196,7 +195,51 @@ def train_resnet(train_dataloader, val_dataloader, device, num_classes=10):
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(model.state_dict(), os.path.join('weights', 'resnet.pth'))
+            if augmented:
+                torch.save(model.state_dict(), os.path.join('weights', 'resnet_aug.pth'))
+            else:
+                torch.save(model.state_dict(), os.path.join('weights', 'resnet.pth'))
+    
+    # After training loop, add validation metrics calculation
+    model.eval()
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for images, labels in val_dataloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    # Calculate metrics
+    val_accuracy = accuracy_score(all_labels, all_preds)
+    val_f1 = f1_score(all_labels, all_preds, average='weighted')
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    
+    # Log metrics
+    wandb.log({
+        "validation_accuracy": val_accuracy,
+        "validation_f1": val_f1
+    })
+    
+    # Create and log confusion matrix plot
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
+                xticklabels=list(CLASS_MAPPING.keys()),
+                yticklabels=list(CLASS_MAPPING.keys()))
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    wandb.log({"confusion_matrix": wandb.Image(plt)})
+    plt.close()
+    
+    # Print metrics
+    print("\nValidation Metrics:")
+    print(f"Accuracy: {val_accuracy:.4f}")
+    print(f"F1-Score: {val_f1:.4f}")
     
     print('Training finished!')
     return model
@@ -322,6 +365,44 @@ def train_convnet(train_dataloader, val_dataloader, device, num_classes=10):
             best_val_acc = val_acc
             torch.save(model.state_dict(), os.path.join('weights', 'convnet.pth'))
     
+    model.eval()
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for images, labels in val_dataloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    val_accuracy = accuracy_score(all_labels, all_preds)
+    val_f1 = f1_score(all_labels, all_preds, average='weighted')
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    
+    wandb.log({
+        "validation_accuracy": val_accuracy,
+        "validation_f1": val_f1
+    })
+    
+    # Confusion matrix
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
+                xticklabels=list(CLASS_MAPPING.keys()),
+                yticklabels=list(CLASS_MAPPING.keys()))
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    wandb.log({"confusion_matrix": wandb.Image(plt)})
+    plt.close()
+    
+    # Metrics
+    print("\nValidation Metrics:")
+    print(f"Accuracy: {val_accuracy:.4f}")
+    print(f"F1-Score: {val_f1:.4f}")
+    
     print('Training finished!')
     return model
 
@@ -394,12 +475,28 @@ def visualize_misclassified(model, val_dataloader, device):
 
 if __name__ == "__main__":
     # Define transforms
+
+    # Use this for non data augmentation
+
+    # transform = transforms.Compose([
+    # transforms.ToPILImage(),
+    # transforms.Resize((224, 224)),
+    # transforms.ToTensor(),
+    # transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+    #                     std=[0.229, 0.224, 0.225])  # ImageNet normalization
+    # ])
+    
+
+    # Use this for data augmentation for resnet augmentation
     transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])  # ImageNet normalization
+    transforms.ToPILImage(),
+    transforms.RandomHorizontalFlip(p=0.5),  # Flip images horizontally with 50% probability
+    transforms.RandomRotation(degrees=15),   # Rotate images randomly within ±15 degrees
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # can adjust brightness, contrast, saturation but as of now I putt 0.2 for all
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                         std=[0.229, 0.224, 0.225])  # ImageNet normalization
     ])
     
     # Initialize datasets
@@ -416,22 +513,23 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     
     # Train models
-    print("\nTraining ResNet18...")
-    resnet_model = train_resnet(train_dataloader, val_dataloader, device)
-    
-    print("\nTraining ConvNet...")
-    convnet_model = train_convnet(train_dataloader, val_dataloader, device)
-    
-    # Extract and visualize features for ResNet18
-    print("\nAnalyzing ResNet18 results...")
+    print("\nTraining ResNet18")
+    resnet_model = train_resnet(train_dataloader, val_dataloader, device, augmented=False)
     train_features, train_labels = extract_features(resnet_model, train_dataloader, device)
     val_features, val_labels = extract_features(resnet_model, val_dataloader, device)
     visualize_misclassified(resnet_model, val_dataloader, device)
     
-    # Analyze ConvNet results
-    print("\nAnalyzing ConvNet results...")
+    print("\nTraining ConvNet")
+    convnet_model = train_convnet(train_dataloader, val_dataloader, device)
     visualize_misclassified(convnet_model, val_dataloader, device)
 
+    print("\nTraining ResNet18 with augmented data")
+    resnet_augmented_model = train_resnet(train_dataloader, val_dataloader, device, augmented=True)
+    
+    train_features_augmented, train_labels_augmented = extract_features(resnet_augmented_model, train_dataloader, device)
+    val_features_augmented, val_labels_augmented = extract_features(resnet_augmented_model, val_dataloader, device)
+    visualize_misclassified(resnet_augmented_model, val_dataloader, device)
+    
     # Perform t-SNE
     # 2D t-SNE for training set
     print("Computing 2D t-SNE for training set...")
