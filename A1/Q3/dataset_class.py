@@ -39,22 +39,6 @@ def analyze_dataset(data_dir):
     print("\nClass distribution:")
     print(CLASS_MAPPING[['name', 'r', 'g', 'b']].head())
     
-    # Visualize a sample pair
-    plt.figure(figsize=(12, 4))
-    
-    plt.subplot(1, 2, 1)
-    plt.imshow(sample_img)
-    plt.title("Sample Training Image")
-    plt.axis('off')
-    
-    plt.subplot(1, 2, 2)
-    plt.imshow(sample_mask)
-    plt.title("Sample Training Mask")
-    plt.axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-    
     return len(train_images), sample_img.size
 
 class SegmentationDataset(Dataset):
@@ -72,10 +56,10 @@ class SegmentationDataset(Dataset):
             self.images_dir = os.path.join(data_dir, 'test_images')
             self.masks_dir = os.path.join(data_dir, 'test_labels')
         
-        self.image_files = sorted([f for f in os.listdir(self.images_dir) if f.endswith('.jpg') or f.endswith('.png')])
-        self.mask_files = sorted([f for f in os.listdir(self.masks_dir) if f.endswith('.jpg') or f.endswith('.png')])
+        self.image_files = sorted([f for f in os.listdir(self.images_dir)])
+        self.mask_files = sorted([f for f in os.listdir(self.masks_dir)])
         
-        # Basic transforms for both image and mask
+        # Transformation according to what is said in 1.a. for both image and mask
         self.resize = transforms.Resize((360, 480), interpolation=transforms.InterpolationMode.BILINEAR)
         self.resize_mask = transforms.Resize((360, 480), interpolation=transforms.InterpolationMode.NEAREST)
         self.normalize = transforms.Normalize(
@@ -128,7 +112,7 @@ class SegmentationDataset(Dataset):
             
         return class_mask, class_to_idx
 
-def get_dataloaders(data_dir, batch_size=4):
+def get_dataloaders(data_dir, batch_size=4, drop_last=False):
     # Create train and test datasets
     train_dataset = SegmentationDataset(data_dir, split='train')
     test_dataset = SegmentationDataset(data_dir, split='test')
@@ -139,7 +123,8 @@ def get_dataloaders(data_dir, batch_size=4):
         batch_size=batch_size,
         shuffle=True,
         num_workers=2,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=drop_last
     )
     
     test_loader = DataLoader(
@@ -147,7 +132,8 @@ def get_dataloaders(data_dir, batch_size=4):
         batch_size=batch_size,
         shuffle=False,
         num_workers=2,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=drop_last
     )
     
     return train_loader, test_loader
@@ -201,18 +187,22 @@ def plot_class_distribution(train_dataset, test_dataset):
 
 def visualize_class_samples(dataset, num_samples=2):
     """
-    Visualize sample images and their masks for each class
+    Visualize sample images and their masks for Car, Pedestrian, and Road classes
     Args:
         dataset: The dataset to sample from
         num_samples: Number of samples to show for each class
     """
-    # Dictionary to store samples for each class
-    class_samples = {idx: [] for idx in range(len(CLASS_MAPPING))}
+    # Select specific classes
+    selected_class_names = ['Car', 'Pedestrian', 'Road']
+    selected_classes = [CLASS_MAPPING[CLASS_MAPPING['name'] == name].index[0] for name in selected_class_names]
     
-    # Collect samples for each class
+    # Dictionary to store samples for selected classes
+    class_samples = {idx: [] for idx in selected_classes}
+    
+    # Collect samples for selected classes
     for img, mask in dataset:
         # Check which classes are present in this mask
-        for class_idx in range(len(CLASS_MAPPING)):
+        for class_idx in selected_classes:
             if (mask == class_idx).any() and len(class_samples[class_idx]) < num_samples:
                 # Denormalize image
                 img_np = img.permute(1, 2, 0).numpy()
@@ -224,12 +214,13 @@ def visualize_class_samples(dataset, num_samples=2):
                 
                 class_samples[class_idx].append((img_np, class_mask))
                 
-        # Check if we have enough samples for all classes
+        # Check if we have enough samples for all selected classes
         if all(len(samples) >= num_samples for samples in class_samples.values()):
             break
     
-    # Plot samples for each class
-    for class_idx, class_name in enumerate(CLASS_MAPPING['name']):
+    # Plot samples for selected classes
+    for class_idx in selected_classes:
+        class_name = CLASS_MAPPING['name'][class_idx]
         samples = class_samples[class_idx]
         if samples:  # If we found any samples for this class
             plt.figure(figsize=(15, 4))
@@ -258,7 +249,7 @@ def visualize_class_samples(dataset, num_samples=2):
 
 if __name__ == "__main__":
     # Analyze dataset
-    print("\nAnalyzing dataset structure...")
+    print("\nAnalyzing dataset structure")
     num_images, image_size = analyze_dataset("dataset")
     
     # Create datasets for distribution analysis
@@ -266,7 +257,7 @@ if __name__ == "__main__":
     test_dataset = SegmentationDataset("dataset", split='test')
     
     # Plot class distribution
-    print("\nAnalyzing class distribution...")
+    print("\nAnalyzing class distribution")
     plot_class_distribution(train_dataset, test_dataset)
     
     # Visualize samples for each class

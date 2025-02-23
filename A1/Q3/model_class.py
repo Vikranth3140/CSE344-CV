@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-from torchvision import models,transforms
+from torchvision import models
 import wandb
 from dataset_class import get_dataloaders, CLASS_MAPPING
 import numpy as np
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 class SegNet_Encoder(nn.Module):
 
@@ -244,7 +244,7 @@ def train_and_evaluate(model, train_loader, test_loader, device, num_epochs=10):
     )
     
     # Evaluate model
-    print("\nEvaluating model on test set...")
+    print("\nEvaluating model on test set")
     class_names = CLASS_MAPPING['name'].tolist()
     metrics, miou = evaluate_model(trained_model, test_loader, device, class_names)
     
@@ -254,6 +254,10 @@ def train_and_evaluate(model, train_loader, test_loader, device, num_epochs=10):
         "test_mean_pixel_acc": np.mean(metrics['pixel_acc']),
         "test_mean_dice": np.mean(metrics['dice'])
     })
+    
+    # Visualize poor predictions
+    print("\nVisualizing poor predictions")
+    visualize_poor_predictions(trained_model, test_loader, device)
     
     wandb.finish()
     return trained_model, metrics, miou
@@ -319,10 +323,10 @@ def train_segnet(model, train_loader, val_loader, device, num_epochs=10):
         
         print(f'Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
         
-        # Save best model
+        # Save decoder weights
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), 'best_segnet.pth')
+            torch.save(model.decoder.state_dict(), 'decoder.pth')
     
     return model
 
@@ -457,36 +461,24 @@ def evaluate_model(model, test_loader, device, class_names):
     return all_metrics, miou
 
 def train_deeplabv3(model, train_loader, val_loader, device, num_epochs=10):
-    """Train the DeepLabV3 model with different strategies from SegNet"""
+    """Train the DeepLabv3 model"""
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
-    # Different loss function: Combine CrossEntropy with Dice Loss
-    ce_criterion = nn.CrossEntropyLoss()
-    dice_criterion = DiceLoss()
-    
-    # Different optimizer setup with weight decay
-    optimizer = torch.optim.Adam([
-        {'params': model.model.backbone.parameters(), 'lr': 0.00001},
-        {'params': model.model.classifier.parameters(), 'lr': 0.0001}
-    ], weight_decay=1e-4)
-    
-    # Add a more aggressive learning rate scheduler
-    scheduler = torch.optim.OneCycleLR(
-        optimizer,
-        max_lr=[0.00001, 0.0001],
-        epochs=num_epochs,
-        steps_per_epoch=len(train_loader)
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, verbose=True
     )
     
-    # Training loop with early stopping
+    # Training loop
     best_val_loss = float('inf')
-    patience = 5
     patience_counter = 0
+    patience = 5  # Early stopping patience
     
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
-        total_ce_loss = 0
-        total_dice_loss = 0
         
         # Progress bar for training
         pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
@@ -496,188 +488,265 @@ def train_deeplabv3(model, train_loader, val_loader, device, num_epochs=10):
             
             # Forward pass
             outputs = model(images)
-            
-            # Calculate both losses
-            ce_loss = ce_criterion(outputs, masks)
-            dice_loss = dice_criterion(outputs, masks)
-            loss = ce_loss + dice_loss
+            loss = criterion(outputs, masks)
             
             # Backward pass and optimize
             optimizer.zero_grad()
             loss.backward()
-            
-            # Gradient clipping (different from SegNet)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             optimizer.step()
             
-            # Update total losses
             total_loss += loss.item()
-            total_ce_loss += ce_loss.item()
-            total_dice_loss += dice_loss.item()
             
             # Update progress bar
-            pbar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'ce_loss': f'{ce_loss.item():.4f}',
-                'dice_loss': f'{dice_loss.item():.4f}'
-            })
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
             
-            # Log batch metrics
+            # Log batch loss
             wandb.log({
                 "batch": batch_idx + epoch * len(train_loader),
-                "batch_total_loss": loss.item(),
-                "batch_ce_loss": ce_loss.item(),
-                "batch_dice_loss": dice_loss.item()
+                "batch_loss": loss.item()
             })
         
-        # Calculate average losses
-        avg_loss = total_loss / len(train_loader)
-        avg_ce_loss = total_ce_loss / len(train_loader)
-        avg_dice_loss = total_dice_loss / len(train_loader)
+        # Calculate average training loss
+        avg_train_loss = total_loss / len(train_loader)
         
-        # Validation phase with metrics
+        # Validation phase
         model.eval()
         val_loss = 0
-        val_metrics = {
-            'iou': [],
-            'pixel_acc': [],
-            'dice': []
-        }
         
         with torch.no_grad():
             for images, masks in val_loader:
                 images, masks = images.to(device), masks.to(device)
                 outputs = model(images)
-                
-                # Calculate validation loss
-                val_ce_loss = ce_criterion(outputs, masks)
-                val_dice_loss = dice_criterion(outputs, masks)
-                val_loss += (val_ce_loss + val_dice_loss).item()
-                
-                # Calculate validation metrics
-                predictions = torch.argmax(outputs, dim=1)
-                batch_metrics = calculate_batch_metrics(predictions, masks)
-                for k in val_metrics.keys():
-                    val_metrics[k].extend(batch_metrics[k])
+                loss = criterion(outputs, masks)
+                val_loss += loss.item()
         
         avg_val_loss = val_loss / len(val_loader)
-        mean_val_metrics = {k: np.mean(v) for k, v in val_metrics.items()}
         
         # Update learning rate
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
+        scheduler.step(avg_val_loss)
         
         # Log epoch metrics
         wandb.log({
             "epoch": epoch + 1,
-            "train_total_loss": avg_loss,
-            "train_ce_loss": avg_ce_loss,
-            "train_dice_loss": avg_dice_loss,
+            "train_loss": avg_train_loss,
             "val_loss": avg_val_loss,
-            "val_iou": mean_val_metrics['iou'],
-            "val_pixel_acc": mean_val_metrics['pixel_acc'],
-            "val_dice": mean_val_metrics['dice'],
-            "learning_rate": current_lr
+            "learning_rate": optimizer.param_groups[0]['lr']
         })
         
-        print(f'\nEpoch {epoch+1} Summary:')
-        print(f'Train Loss: {avg_loss:.4f} (CE: {avg_ce_loss:.4f}, Dice: {avg_dice_loss:.4f})')
-        print(f'Val Loss: {avg_val_loss:.4f}')
-        print(f'Val Metrics - IoU: {mean_val_metrics["iou"]:.4f}, '
-              f'Pixel Acc: {mean_val_metrics["pixel_acc"]:.4f}, '
-              f'Dice: {mean_val_metrics["dice"]:.4f}')
-        print(f'Learning Rate: {current_lr:.6f}')
+        print(f'Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
         
-        # Save best model and early stopping
+        # Save best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'val_loss': best_val_loss,
-                'val_metrics': mean_val_metrics
-            }, 'best_deeplabv3.pth')
+            torch.save(model.state_dict(), 'deeplabv3.pth')
             patience_counter = 0
         else:
             patience_counter += 1
-            if patience_counter >= patience:
-                print(f'\nEarly stopping triggered after {epoch + 1} epochs')
-                break
+            
+        # Early stopping
+        if patience_counter >= patience:
+            print(f'Early stopping triggered after {epoch + 1} epochs')
+            break
     
     return model
 
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1.0):
-        super(DiceLoss, self).__init__()
-        self.smooth = smooth
-        
-    def forward(self, predictions, targets):
-        # Convert predictions to probabilities
-        predictions = F.softmax(predictions, dim=1)
-        
-        # One-hot encode targets
-        targets_one_hot = F.one_hot(targets, num_classes=predictions.shape[1])
-        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()
-        
-        # Calculate Dice coefficient for each class
-        intersection = (predictions * targets_one_hot).sum(dim=(2, 3))
-        union = predictions.sum(dim=(2, 3)) + targets_one_hot.sum(dim=(2, 3))
-        
-        # Calculate Dice loss
-        dice = (2. * intersection + self.smooth) / (union + self.smooth)
-        dice_loss = 1 - dice.mean()
-        
-        return dice_loss
-
-def calculate_batch_metrics(predictions, targets):
-    """Calculate metrics for a batch"""
-    metrics = {
-        'iou': [],
-        'pixel_acc': [],
-        'dice': []
-    }
+def visualize_poor_predictions(model, test_loader, device, iou_threshold=0.5, samples_per_class=3):
+    """
+    Visualize images where model performs poorly (IoU ≤ 0.5) for Car, Pedestrian, and Road classes
+    Args:
+        model: Trained model
+        test_loader: DataLoader for test data
+        device: Device to run model on
+        iou_threshold: Maximum IoU threshold to consider as poor prediction
+        samples_per_class: Number of samples to show for each class
+    """
+    model.eval()
     
-    for pred, target in zip(predictions, targets):
-        # Calculate IoU
-        intersection = torch.logical_and(pred, target)
-        union = torch.logical_or(pred, target)
-        iou = (intersection.sum() / (union.sum() + 1e-8)).item()
-        
-        # Calculate Pixel Accuracy
-        pixel_acc = (pred == target).float().mean().item()
-        
-        # Calculate Dice Coefficient
-        dice = (2 * intersection.sum() / (pred.sum() + target.sum() + 1e-8)).item()
-        
-        metrics['iou'].append(iou)
-        metrics['pixel_acc'].append(pixel_acc)
-        metrics['dice'].append(dice)
+    # Select specific classes
+    selected_class_names = ['Car', 'Pedestrian', 'Road']
+    selected_classes = [CLASS_MAPPING[CLASS_MAPPING['name'] == name].index[0] for name in selected_class_names]
+    class_samples = {idx: [] for idx in selected_classes}
     
-    return metrics
+    with torch.no_grad():
+        for images, masks in test_loader:
+            if all(len(samples) >= samples_per_class for samples in class_samples.values()):
+                break
+                
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+            predictions = torch.argmax(outputs, dim=1)
+            
+            # Move tensors to CPU
+            images = images.cpu()
+            masks = masks.cpu()
+            predictions = predictions.cpu()
+            
+            # Check each image in batch
+            for img, mask, pred in zip(images, masks, predictions):
+                # Calculate IoU for selected classes in this image
+                for class_idx in selected_classes:
+                    if len(class_samples[class_idx]) >= samples_per_class:
+                        continue
+                        
+                    true_mask = (mask == class_idx)
+                    pred_mask = (pred == class_idx)
+                    
+                    if not true_mask.any():
+                        continue  # Skip if class not present in ground truth
+                    
+                    intersection = (true_mask & pred_mask).sum().item()
+                    union = (true_mask | pred_mask).sum().item()
+                    iou = intersection / (union + 1e-8)
+                    
+                    if iou <= iou_threshold:
+                        # Denormalize image
+                        img_np = img.permute(1, 2, 0).numpy()
+                        img_np = img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+                        img_np = np.clip(img_np, 0, 1)
+                        
+                        class_samples[class_idx].append({
+                            'image': img_np,
+                            'true_mask': true_mask.numpy(),
+                            'pred_mask': pred_mask.numpy(),
+                            'iou': iou
+                        })
+    
+    # Visualize samples for selected classes
+    for class_idx in selected_classes:
+        samples = class_samples[class_idx]
+        class_name = CLASS_MAPPING['name'][class_idx]
+        class_color = [
+            CLASS_MAPPING['r'][class_idx]/255.0,
+            CLASS_MAPPING['g'][class_idx]/255.0,
+            CLASS_MAPPING['b'][class_idx]/255.0
+        ]
+        
+        if samples:
+            plt.figure(figsize=(15, 5*min(len(samples), samples_per_class)))
+            plt.suptitle(f'Poor Predictions for Class: {class_name} (IoU ≤ {iou_threshold})', fontsize=14)
+            
+            for i, sample in enumerate(samples[:samples_per_class]):
+                # Original image
+                plt.subplot(min(len(samples), samples_per_class), 3, i*3 + 1)
+                plt.imshow(sample['image'])
+                plt.title(f'Original Image\nIoU: {sample["iou"]:.3f}')
+                plt.axis('off')
+                
+                # Ground truth mask
+                plt.subplot(min(len(samples), samples_per_class), 3, i*3 + 2)
+                overlay = sample['image'].copy()
+                overlay[sample['true_mask']] = class_color
+                plt.imshow(overlay)
+                plt.title('Ground Truth')
+                plt.axis('off')
+                
+                # Predicted mask
+                plt.subplot(min(len(samples), samples_per_class), 3, i*3 + 3)
+                overlay = sample['image'].copy()
+                overlay[sample['pred_mask']] = class_color
+                plt.imshow(overlay)
+                plt.title('Prediction')
+                plt.axis('off')
+                
+                # Add analysis of failure case
+                if sample['true_mask'].sum() < 100:
+                    plt.figtext(0.99, 0.99-i*0.33, "Possible issue: Small/distant object", 
+                              wrap=True, horizontalalignment='right')
+                elif sample['pred_mask'].sum() > 2*sample['true_mask'].sum():
+                    plt.figtext(0.99, 0.99-i*0.33, "Possible issue: Over-segmentation/confusion with surroundings", 
+                              wrap=True, horizontalalignment='right')
+                elif sample['pred_mask'].sum() < 0.5*sample['true_mask'].sum():
+                    plt.figtext(0.99, 0.99-i*0.33, "Possible issue: Under-segmentation/occlusion", 
+                              wrap=True, horizontalalignment='right')
+                else:
+                    plt.figtext(0.99, 0.99-i*0.33, "Possible issue: Misclassification due to similar appearance", 
+                              wrap=True, horizontalalignment='right')
+            
+            plt.tight_layout()
+            plt.show()
+            
+            # Log to wandb
+            wandb.log({f"Poor_Predictions_{class_name}": wandb.Image(plt)})
+        else:
+            print(f"No poor predictions found for class: {class_name}")
 
 if __name__ == "__main__":
+
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # Load data
-    train_loader, test_loader = get_dataloaders("dataset", batch_size=8)
+    # train_loader, test_loader = get_dataloaders("dataset", batch_size=8)
+    
+    
+    train_loader, test_loader = get_dataloaders("dataset", batch_size=8, 
+                                               drop_last=True)  # Increased batch size
+    
+
+
+
+
+    # # SegNet
+
+    # # Initialize model
+    # model = SegNet_Pretrained(
+    #     encoder_weight_pth='encoder_model.pth',
+    #     in_chn=3,
+    #     out_chn=32
+    # ).to(device)
+    
+    # # Train and evaluate model
+    # trained_model, metrics, miou = train_and_evaluate(
+    #     model=model,
+    #     train_loader=train_loader,
+    #     test_loader=test_loader,
+    #     device=device,
+    #     num_epochs=10
+    # )
+
+
+
+
+    # DeepLabV3
     
     # Initialize model
-    model = SegNet_Pretrained(
-        encoder_weight_pth='encoder_model.pth',
-        in_chn=3,
-        out_chn=32
-    ).to(device)
+    num_classes = len(CLASS_MAPPING)
+    model = DeepLabV3(num_classes=num_classes).to(device)
+    
+    # Initialize wandb
+    wandb.init(
+        project="segmentation-deeplabv3",
+        config={
+            "architecture": "DeepLabv3",
+            "backbone": "ResNet50",
+            "dataset": "CamVid",
+            "num_classes": num_classes,
+            "batch_size": train_loader.batch_size,
+            "optimizer": "Adam",
+            "learning_rate": 0.001
+        }
+    )
     
     # Train and evaluate model
-    trained_model, metrics, miou = train_and_evaluate(
+    trained_model = train_deeplabv3(
         model=model,
         train_loader=train_loader,
-        test_loader=test_loader,
+        val_loader=test_loader,
         device=device,
         num_epochs=10
     )
+    
+    # Evaluate model
+    print("\nEvaluating model on test set")
+    class_names = CLASS_MAPPING['name'].tolist()
+    metrics, miou = evaluate_model(trained_model, test_loader, device, class_names)
+    
+    # Log final test metrics
+    wandb.log({
+        "test_miou": miou,
+        "test_mean_pixel_acc": np.mean(metrics['pixel_acc']),
+        "test_mean_dice": np.mean(metrics['dice'])
+    })
+    
+    wandb.finish()
