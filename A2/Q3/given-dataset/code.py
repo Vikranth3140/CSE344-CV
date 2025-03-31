@@ -18,7 +18,7 @@ objpoints = []
 imgpoints = []
 
 # Load images from the provided dataset
-images = glob.glob('chessboard_dataset/*.jpeg')
+images = glob.glob('../chessboard_dataset/*.jpeg')
 if len(images) != 25:
     print(f"Warning: Found {len(images)} images, expected 25")
 
