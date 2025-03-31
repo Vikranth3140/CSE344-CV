@@ -1,0 +1,10 @@
+Intrinsic Parameters (Provided Dataset):
+Intrinsic Matrix (K):
+[[1.30650450e+03 0.00000000e+00 6.31947681e+02]
+ [0.00000000e+00 1.31941654e+03 5.31411868e+02]
+ [0.00000000e+00 0.00000000e+00 1.00000000e+00]]
+
+Focal Lengths: fx = 1306.50, fy = 1319.42 pixels
+Principal Point: cx = 631.95, cy = 531.41 pixels
+Skew Parameter: 0.00
+Reprojection Error: 1.8691 pixels
