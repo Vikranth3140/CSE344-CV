@@ -1,0 +1,2 @@
+Distortion Coefficients (Provided Dataset):
+[[ 0.19763675 -0.70686387  0.00336937  0.00698244  0.04877249]]

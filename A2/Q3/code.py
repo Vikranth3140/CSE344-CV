@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import glob
 import json
+import os
 
 # Chessboard size (number of inner corners)
 CHESSBOARD_SIZE = (8, 6)  # (width, height) in corners
@@ -100,6 +101,39 @@ with open('extrinsic_params_provided.txt', 'w') as f:
         f.write("Translation Vector (t):\n")
         f.write(f"{t}\n")
 
+# Extract distortion coefficients
+print("\nDistortion Coefficients:")
+print(dist)
+
+# Save distortion coefficients
+with open('distortion_params_provided.txt', 'w') as f:
+    f.write("Distortion Coefficients (Provided Dataset):\n")
+    f.write(f"{dist}\n")
+
+# Create directories for raw and undistorted images
+os.makedirs('raw_images', exist_ok=True)
+os.makedirs('undistorted_images', exist_ok=True)
+
+# Undistort the first 5 images
+for i, fname in enumerate(images[:5]):
+    img = cv2.imread(fname)
+    if img is None:
+        print(f"Failed to load {fname} for undistortion")
+        continue
+
+    # Save raw image
+    raw_path = f'raw_images/raw_image_{i+1:02d}.jpeg'
+    cv2.imwrite(raw_path, img)
+
+    # Undistort the image
+    undistorted_img = cv2.undistort(img, mtx, dist, None, mtx)
+
+    # Save undistorted image
+    undistorted_path = f'undistorted_images/undistorted_image_{i+1:02d}.jpeg'
+    cv2.imwrite(undistorted_path, undistorted_img)
+
+    print(f"Saved raw and undistorted versions of {fname}")
+
 # Prepare JSON
 intrinsics = {
     "fx": float(mtx[0, 0]),
@@ -122,10 +156,10 @@ for i in range(min(2, len(rvecs))):
 calibration_data = {
     "intrinsics": intrinsics,
     "extrinsics": extrinsics,
-    "distortion": []
+    "distortion": dist.flatten().tolist()
 }
 
 with open('calibration_provided.json', 'w') as f:
     json.dump(calibration_data, f, indent=4)
 
-print("Saved extrinsic parameters to calibration_provided.json")
+print("Saved distortion coefficients to calibration_provided.json")
