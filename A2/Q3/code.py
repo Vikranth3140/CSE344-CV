@@ -163,3 +163,59 @@ with open('calibration_provided.json', 'w') as f:
     json.dump(calibration_data, f, indent=4)
 
 print("Saved distortion coefficients to calibration_provided.json")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Reprojection -3.4
+
+
+
+import matplotlib.pyplot as plt
+
+# Compute reprojection error for each image
+reprojection_errors = []
+
+for i in range(len(objpoints)):
+    imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
+    error = cv2.norm(imgpoints[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
+    reprojection_errors.append(error)
+
+# Report individual errors
+for i, err in enumerate(reprojection_errors):
+    print(f"Image {i+1:02d} - Reprojection Error: {err:.4f} pixels")
+
+# Compute mean and standard deviation
+mean_error = np.mean(reprojection_errors)
+std_error = np.std(reprojection_errors)
+print(f"\nMean Reprojection Error: {mean_error:.4f} pixels")
+print(f"Standard Deviation: {std_error:.4f} pixels")
+
+# Plot bar chart of errors
+plt.figure(figsize=(10, 5))
+plt.bar(range(1, len(reprojection_errors)+1), reprojection_errors, color='royalblue')
+plt.axhline(mean_error, color='red', linestyle='--', label=f"Mean = {mean_error:.4f}")
+plt.title("Per-Image Reprojection Error")
+plt.xlabel("Image Index")
+plt.ylabel("Reprojection Error (pixels)")
+plt.xticks(range(1, len(reprojection_errors)+1))
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("reprojection_error_plot.png")
+plt.show()
