@@ -250,3 +250,29 @@ for i, fname in enumerate(images):
     out_path = f"reprojection_visuals/reprojection_comparison_{i+1:02d}.jpeg"
     cv2.imwrite(out_path, img)
     print(f"Saved reprojection overlay for Image {i+1}")
+
+
+
+
+
+
+
+
+# checkerboard plane normals - 3.6
+
+
+
+# Compute and save checkerboard plane normals in camera frame
+plane_normals = []
+
+for i in range(len(rvecs)):
+    R, _ = cv2.Rodrigues(rvecs[i])         # Convert to rotation matrix
+    normal_ci = R[:, 2]                    # Third column is the Z-axis of the checkerboard in camera frame
+    plane_normals.append(normal_ci)
+    print(f"Image {i+1:02d} - Plane Normal (Camera Frame): {normal_ci}")
+
+# Optional: save to file
+with open('checkerboard_normals_camera_frame.txt', 'w') as f:
+    f.write("Checkerboard Plane Normals (Camera Frame):\n")
+    for i, n in enumerate(plane_normals):
+        f.write(f"Image {i+1:02d}: {n.tolist()}\n")
