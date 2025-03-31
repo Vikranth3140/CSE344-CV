@@ -182,7 +182,7 @@ print("Saved distortion coefficients to calibration_provided.json")
 
 
 
-# Reprojection -3.4
+# Reprojection - 3.4
 
 
 
@@ -219,3 +219,34 @@ plt.grid(True)
 plt.tight_layout()
 plt.savefig("reprojection_error_plot.png")
 plt.show()
+
+
+
+
+
+# corners detected - 3.5
+
+
+# Directory to save comparison images
+os.makedirs('reprojection_visuals', exist_ok=True)
+
+for i, fname in enumerate(images):
+    img = cv2.imread(fname)
+    if img is None:
+        print(f"Failed to load {fname}")
+        continue
+
+    # Project object points using estimated parameters
+    imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
+
+    # Draw original detected corners (green) and reprojected corners (red)
+    for p1, p2 in zip(imgpoints[i], imgpoints2):
+        pt1 = tuple(np.round(p1.ravel()).astype(int))  # Detected
+        pt2 = tuple(np.round(p2.ravel()).astype(int))  # Reprojected
+        cv2.circle(img, pt1, 4, (0, 255, 0), -1)  # Green
+        cv2.circle(img, pt2, 2, (0, 0, 255), -1)  # Red
+
+    # Save image
+    out_path = f"reprojection_visuals/reprojection_comparison_{i+1:02d}.jpeg"
+    cv2.imwrite(out_path, img)
+    print(f"Saved reprojection overlay for Image {i+1}")
