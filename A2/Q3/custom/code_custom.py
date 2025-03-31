@@ -182,7 +182,7 @@ print("Saved distortion coefficients to calibration_provided.json")
 
 
 
-# Reprojection -3.4
+# Reprojection - 3.4
 
 
 
@@ -219,3 +219,60 @@ plt.grid(True)
 plt.tight_layout()
 plt.savefig("reprojection_error_plot.png")
 plt.show()
+
+
+
+
+
+# corners detected - 3.5
+
+
+# Directory to save comparison images
+os.makedirs('reprojection_visuals', exist_ok=True)
+
+for i, fname in enumerate(images):
+    img = cv2.imread(fname)
+    if img is None:
+        print(f"Failed to load {fname}")
+        continue
+
+    # Project object points using estimated parameters
+    imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
+
+    # Draw original detected corners (green) and reprojected corners (red)
+    for p1, p2 in zip(imgpoints[i], imgpoints2):
+        pt1 = tuple(np.round(p1.ravel()).astype(int))  # Detected
+        pt2 = tuple(np.round(p2.ravel()).astype(int))  # Reprojected
+        cv2.circle(img, pt1, 4, (0, 255, 0), -1)  # Green
+        cv2.circle(img, pt2, 2, (0, 0, 255), -1)  # Red
+
+    # Save image
+    out_path = f"reprojection_visuals/reprojection_comparison_{i+1:02d}.jpeg"
+    cv2.imwrite(out_path, img)
+    print(f"Saved reprojection overlay for Image {i+1}")
+
+
+
+
+
+
+
+
+# checkerboard plane normals - 3.6
+
+
+
+# Compute and save checkerboard plane normals in camera frame
+plane_normals = []
+
+for i in range(len(rvecs)):
+    R, _ = cv2.Rodrigues(rvecs[i])         # Convert to rotation matrix
+    normal_ci = R[:, 2]                    # Third column is the Z-axis of the checkerboard in camera frame
+    plane_normals.append(normal_ci)
+    print(f"Image {i+1:02d} - Plane Normal (Camera Frame): {normal_ci}")
+
+# Optional: save to file
+with open('checkerboard_normals_camera_frame.txt', 'w') as f:
+    f.write("Checkerboard Plane Normals (Camera Frame):\n")
+    for i, n in enumerate(plane_normals):
+        f.write(f"Image {i+1:02d}: {n.tolist()}\n")
