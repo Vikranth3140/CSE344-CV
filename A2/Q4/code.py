@@ -128,3 +128,38 @@ plt.axis('off')
 
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+# 4.3
+
+
+
+
+
+import numpy as np
+import pandas as pd
+import cv2
+import os
+
+# Compute Homography matrix (reuse src_pts, dst_pts from bf_good matches)
+if len(bf_good) > 10:
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in bf_good]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in bf_good]).reshape(-1, 1, 2)
+
+    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+    # Save Homography matrix to CSV
+    homography_df = pd.DataFrame(H)
+    csv_path = "homography_matrix.csv"
+    homography_df.to_csv(csv_path, index=False, header=False)
+
+    print(f"✅ Homography matrix saved to {csv_path}")
+    print(H)
+
+else:
+    print("Not enough matches to estimate homography.")
