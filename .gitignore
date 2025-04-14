@@ -14,3 +14,5 @@ A2/Q5/__pycache__
 A3/Q1/CLIPS
 A3/Q4/lavt-env/
 A3/Q4/LAVT-RIS
+A3/Q4/checkpoints/refcoco.pth
+A3/Q4/pretrained_weights/swin_base_patch4_window12_384_22k.pth
