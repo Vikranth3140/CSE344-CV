@@ -19,3 +19,4 @@ A3/Q4/pretrained_weights/swin_base_patch4_window12_384_22k.pth
 A3/Q5/Matcher
 A3/Q4/bert_/
 A3/Q4/lib/
+A3/Q5/sam_checkpoints/sam_vit_h_4b8939.pth
