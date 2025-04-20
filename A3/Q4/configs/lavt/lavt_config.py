@@ -1,6 +1,6 @@
 # LAVT configuration based on the README
 
-# Do not use mmcv - using pure Python dictionaries instead
+# Using pure Python dictionaries instead of mmcv Config
 # Model configuration settings from the LAVT README
 lavt_config = {
     # Swin Transformer backbone settings
@@ -22,8 +22,7 @@ lavt_config = {
     'text_encoder': {
         'type': 'bert',
         'pretrained': 'bert-base-uncased',
-        'trainable': True,
-        'version': '3.0.2'
+        'trainable': True
     },
 
     # Decode head settings
